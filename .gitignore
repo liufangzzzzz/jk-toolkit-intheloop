@@ -48,3 +48,4 @@ next-env.d.ts
 
 # 打包产物
 *.zip
+.user.ini
