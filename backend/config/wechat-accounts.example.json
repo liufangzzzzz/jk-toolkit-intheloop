@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "default_account_id": "intheloop",
+  "accounts": [
+    {
+      "id": "intheloop",
+      "name": "In The Loop.具身现场",
+      "app_id": "",
+      "app_secret": "",
+      "enabled": true,
+      "last_test_ok": false
+    }
+  ]
+}

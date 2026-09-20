@@ -1,0 +1,13 @@
+fastapi==0.115.12
+beautifulsoup4==4.15.0
+feishu-docx[browser]==0.2.7
+httpx==0.28.1
+mammoth==1.12.0
+pillow==11.2.1; python_version < "3.14"
+pillow>=12.0.0,<13; python_version >= "3.14"
+playwright==1.62.0
+pydantic==2.11.5; python_version < "3.14"
+pydantic>=2.12.0,<3; python_version >= "3.14"
+python-dotenv==1.1.0
+python-multipart==0.0.20
+uvicorn[standard]==0.34.3

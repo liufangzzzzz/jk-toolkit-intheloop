@@ -1,0 +1,51 @@
+services:
+  frontend:
+    build: .
+    restart: unless-stopped
+    environment:
+      PUBLISHER_BACKEND_URL: http://backend:8000
+      NEXT_PUBLIC_SITE_ORIGIN: ${NEXT_PUBLIC_SITE_ORIGIN:-https://toolkit-intheloop.geekpark.net}
+    ports:
+      - "127.0.0.1:${ITL_PORT:-3000}:3000"
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      ITL_SETTINGS_PATH: /data/toolkit-settings.json
+      ITL_DATABASE_PATH: /data/toolkit.db
+      ITL_IMPORT_ASSET_PATH: /data/import-assets
+      ITL_COOKIE_SECURE: ${ITL_COOKIE_SECURE:-true}
+      ITL_ALLOWED_ORIGINS: ${ITL_ALLOWED_ORIGINS:-http://localhost:3000}
+      TOOLKIT_INTHELOOP_PASSWORD: ${TOOLKIT_INTHELOOP_PASSWORD:-}
+      ITL_SESSION_SECRET: ${ITL_SESSION_SECRET:-}
+      FEISHU_FETCH_MODE: ${FEISHU_FETCH_MODE:-public}
+      WECHAT_APP_ID: ${WECHAT_APP_ID:-wx0ad9c0e3d4f70a6c}
+      WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
+      WECHAT_ACCOUNT_NAME: ${WECHAT_ACCOUNT_NAME:-In The Loop.具身现场}
+      WECHAT_API_BASE: ${WECHAT_API_BASE:-https://api.weixin.qq.com/cgi-bin}
+      WECHAT_THUMB_MEDIA_ID: ${WECHAT_THUMB_MEDIA_ID:-}
+      GEEKPARK_LOGIN_NAME: ${GEEKPARK_LOGIN_NAME:-}
+      GEEKPARK_LOGIN_PASSWORD: ${GEEKPARK_LOGIN_PASSWORD:-}
+      WEBSITE_GEEKPARK_API_BASE: ${WEBSITE_GEEKPARK_API_BASE:-https://mainssl.geekpark.net}
+      WEBSITE_GEEKPARK_ADMIN_BASE: ${WEBSITE_GEEKPARK_ADMIN_BASE:-https://admin.geekpark.net}
+      WEBSITE_GEEKPARK_ROLES: ${WEBSITE_GEEKPARK_ROLES:-dev}
+      ITL_AGENT_API_KEY: ${ITL_AGENT_API_KEY:-}
+    volumes:
+      - public-image-cache:/tmp/intheloop-public-images
+      - toolkit-settings:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live')"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  public-image-cache:
+  toolkit-settings:

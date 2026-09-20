@@ -1,0 +1,14 @@
+.env
+.env.*
+!.env.example
+.git
+.next
+.vinext
+.wrangler
+.venv
+.venv312
+node_modules
+npm-debug.log*
+backend/config/wechat-accounts.json
+**/__pycache__
+**/*.pyc
