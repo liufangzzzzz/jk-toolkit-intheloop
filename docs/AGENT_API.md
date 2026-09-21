@@ -40,6 +40,13 @@ curl -X POST 'https://toolkit-intheloop.geekpark.net/api/v1/agent/website/import
 ```
 
 支持 `.docx` 和 `.doc`，单个文件最大 30MB。
+`column_id` 留空时，Word 会优先匹配官网的“行业资讯”栏目；调用方传入明确栏目 ID 时以传入值为准。
+
+发布结果会分别返回：
+
+- `admin_edit_url`：官网后台编辑地址。
+- `public_url`：仅直接发布时返回，格式为 `https://www.geekpark.net/news/{文章ID}`。
+- `failed_images`：未能上传的图片及本地下载地址，便于 Agent 或人工补回。
 
 ## 查询任务
 
@@ -51,4 +58,3 @@ curl 'https://toolkit-intheloop.geekpark.net/api/v1/agent/website/jobs/JOB_ID' \
 ```
 
 任务状态为 `processing`、`completed` 或 `failed`。同步调用通常会直接返回最终状态，但查询接口可用于调用方保存记录和重试核对。
-

@@ -5,6 +5,14 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+class WebsiteImageIssue(BaseModel):
+    index: int = Field(ge=1)
+    label: str = ""
+    source_url: str = ""
+    asset_url: str = ""
+    message: str
+
+
 class WebsiteImportArticle(BaseModel):
     title: str = Field(min_length=1, max_length=180)
     abstract: str = Field(default="", max_length=500)
@@ -14,6 +22,7 @@ class WebsiteImportArticle(BaseModel):
     source_type: Literal["wechat_url", "docx", "doc"]
     source_ref: str = ""
     warnings: list[str] = Field(default_factory=list)
+    image_issues: list[WebsiteImageIssue] = Field(default_factory=list)
 
 
 class WebsitePublishRequest(BaseModel):

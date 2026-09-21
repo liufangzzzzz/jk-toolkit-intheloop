@@ -3,7 +3,7 @@ from __future__ import annotations
 import hmac
 import os
 
-from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 
 from ...auth import require_auth
@@ -63,12 +63,13 @@ async def parse_file(file: UploadFile = File(...)) -> dict:
 
 
 @router.get("/assets/{token}")
-async def asset(token: str) -> Response:
+async def asset(token: str, download: bool = Query(False)) -> Response:
     resolved = read_asset(f"ingest-asset://{token}")
     if not resolved:
         raise HTTPException(status_code=404, detail={"message": "图片不存在或已经过期"})
-    raw, _filename, content_type = resolved
-    return Response(content=raw, media_type=content_type)
+    raw, filename, content_type = resolved
+    headers = {"Content-Disposition": f'attachment; filename="{filename}"'} if download else {}
+    return Response(content=raw, media_type=content_type, headers=headers)
 
 
 @router.post("/publish")

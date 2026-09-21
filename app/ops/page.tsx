@@ -1,6 +1,6 @@
 'use client';
 
-import { ChangeEvent, FormEvent, useEffect, useState } from 'react';
+import { DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type Tool = 'wechat' | 'website';
 type BusyState = '' | 'saving' | 'testing' | 'parsing' | 'draft' | 'publishing' | 'connecting';
@@ -49,6 +49,13 @@ type WebsiteArticle = {
   source_type: 'wechat_url' | 'docx' | 'doc';
   source_ref: string;
   warnings: string[];
+  image_issues: Array<{
+    index: number;
+    label: string;
+    source_url: string;
+    asset_url: string;
+    message: string;
+  }>;
 };
 
 type WebsiteParseResult = {
@@ -73,8 +80,25 @@ type PublishResult = {
   admin_edit_url?: string;
   state?: string;
   warnings?: string[];
+  failed_images?: Array<{
+    index: number;
+    label: string;
+    asset_url: string;
+    message: string;
+  }>;
   duplicate_prevented?: boolean;
 };
+
+function preferredColumn(status: WebsiteStatus | null, source: 'url' | 'word'): number {
+  if (!status) return 0;
+  if (source === 'word') {
+    const industry = status.columns.find((column) => column.title.trim() === '行业资讯')
+      || status.columns.find((column) => column.title.includes('行业资讯'))
+      || status.columns.find((column) => column.id === 2);
+    if (industry) return industry.id;
+  }
+  return status.column_id || status.columns[0]?.id || 0;
+}
 
 function requestId(prefix: string): string {
   const id = typeof crypto !== 'undefined' && 'randomUUID' in crypto
@@ -126,7 +150,7 @@ export default function OperationsWorkbench() {
   const [websiteStatus, setWebsiteStatus] = useState<WebsiteStatus | null>(null);
   const [websiteSource, setWebsiteSource] = useState<'url' | 'word'>('url');
   const [websiteUrl, setWebsiteUrl] = useState('');
-  const [wordFile, setWordFile] = useState<File | null>(null);
+  const [wordFiles, setWordFiles] = useState<File[]>([]);
   const [websiteBusy, setWebsiteBusy] = useState<BusyState>('');
   const [websiteNotice, setWebsiteNotice] = useState('');
   const [websiteParsed, setWebsiteParsed] = useState<WebsiteParseResult | null>(null);
@@ -134,28 +158,7 @@ export default function OperationsWorkbench() {
   const [selectedColumn, setSelectedColumn] = useState(0);
   const [websitePublishResult, setWebsitePublishResult] = useState<PublishResult | null>(null);
 
-  useEffect(() => {
-    api<{ authenticated: boolean; auth_enabled: boolean; setup_required?: boolean }>('/auth/me')
-      .then((status) => {
-        setBackendConnected(true);
-        setAuthenticated(status.authenticated);
-        setAuthEnabled(status.auth_enabled);
-        setSetupRequired(Boolean(status.setup_required));
-      })
-      .catch(() => {
-        setBackendConnected(false);
-        setAuthenticated(false);
-      })
-      .finally(() => setCheckingAuth(false));
-  }, []);
-
-  useEffect(() => {
-    if (!authenticated || !backendConnected) return;
-    void loadWechatSettings();
-    void loadWebsiteStatus();
-  }, [authenticated, backendConnected]);
-
-  async function loadWechatSettings() {
+  const loadWechatSettings = useCallback(async () => {
     try {
       const next = await api<WechatSettings>('/wechat-draft/settings');
       setWechatSettings(next);
@@ -164,17 +167,36 @@ export default function OperationsWorkbench() {
     } catch {
       setWechatSettings(null);
     }
-  }
+  }, []);
 
-  async function loadWebsiteStatus() {
+  const loadWebsiteStatus = useCallback(async (source: 'url' | 'word') => {
     try {
       const next = await api<WebsiteStatus>('/website-import/status');
       setWebsiteStatus(next);
-      setSelectedColumn(next.column_id || next.columns[0]?.id || 0);
+      setSelectedColumn(preferredColumn(next, source));
     } catch {
       setWebsiteStatus(null);
     }
-  }
+  }, []);
+
+  useEffect(() => {
+    api<{ authenticated: boolean; auth_enabled: boolean; setup_required?: boolean }>('/auth/me')
+      .then((status) => {
+        setBackendConnected(true);
+        setAuthenticated(status.authenticated);
+        setAuthEnabled(status.auth_enabled);
+        setSetupRequired(Boolean(status.setup_required));
+        if (status.authenticated) {
+          void loadWechatSettings();
+          void loadWebsiteStatus('url');
+        }
+      })
+      .catch(() => {
+        setBackendConnected(false);
+        setAuthenticated(false);
+      })
+      .finally(() => setCheckingAuth(false));
+  }, [loadWechatSettings, loadWebsiteStatus]);
 
   async function login(event: FormEvent) {
     event.preventDefault();
@@ -192,6 +214,10 @@ export default function OperationsWorkbench() {
       setAuthEnabled(status.auth_enabled);
       setSetupRequired(Boolean(status.setup_required));
       setPassword('');
+      if (status.authenticated) {
+        void loadWechatSettings();
+        void loadWebsiteStatus(websiteSource);
+      }
     } catch (failure) {
       setLoginError(
         backendConnected
@@ -292,7 +318,7 @@ export default function OperationsWorkbench() {
     try {
       const next = await api<WebsiteStatus>('/website-import/connect', { method: 'POST' });
       setWebsiteStatus(next);
-      setSelectedColumn(next.column_id || next.columns[0]?.id || 0);
+      setSelectedColumn(preferredColumn(next, websiteSource));
       setWebsiteNotice(`官网账号连接成功${next.nickname ? `：${next.nickname}` : ''}`);
     } catch (failure) {
       setWebsiteNotice(failure instanceof Error ? failure.message : '官网连接失败');
@@ -301,14 +327,20 @@ export default function OperationsWorkbench() {
     }
   }
 
-  function acceptWordFile(event: ChangeEvent<HTMLInputElement>) {
-    setWordFile(event.target.files?.[0] || null);
+  function acceptWordFiles(files: File[]) {
+    const accepted = files.filter((file) => /\.(docx?|DOCX?)$/.test(file.name));
+    setWordFiles((current) => {
+      const all = [...current, ...accepted];
+      return all.filter((file, index) => all.findIndex((candidate) => (
+        candidate.name === file.name && candidate.size === file.size && candidate.lastModified === file.lastModified
+      )) === index);
+    });
     setWebsiteNotice('');
   }
 
   async function parseWebsiteSource() {
     if (websiteSource === 'url' && !websiteUrl.trim()) return;
-    if (websiteSource === 'word' && !wordFile) return;
+    if (websiteSource === 'word' && !wordFiles[0]) return;
     setWebsiteBusy('parsing');
     setWebsiteNotice('');
     setWebsiteParsed(null);
@@ -322,13 +354,15 @@ export default function OperationsWorkbench() {
         });
       } else {
         const form = new FormData();
-        form.set('file', wordFile as File);
+        form.set('file', wordFiles[0]);
         parsed = await api<WebsiteParseResult>('/website-import/parse-file', {
           method: 'POST',
           body: form,
         });
+        setWordFiles((current) => current.slice(1));
       }
       setWebsiteParsed(parsed);
+      setSelectedColumn(preferredColumn(websiteStatus, websiteSource));
       setWebsiteRequestId(requestId('website'));
     } catch (failure) {
       setWebsiteNotice(failure instanceof Error ? failure.message : '内容解析失败');
@@ -363,8 +397,10 @@ export default function OperationsWorkbench() {
         }),
       });
       setWebsitePublishResult(result);
-      setWebsiteNotice(`${mode === 'publish' ? '官网文章已发布' : '官网草稿已创建'}${result.duplicate_prevented ? '（已阻止重复提交）' : ''}`);
-      await loadWebsiteStatus();
+      const remaining = wordFiles.length;
+      setWebsiteNotice(`${mode === 'publish' ? '官网文章已发布' : '官网草稿已创建'}${result.duplicate_prevented ? '（已阻止重复提交）' : ''}${remaining ? `，还有 ${remaining} 篇待审核` : ''}`);
+      await loadWebsiteStatus(websiteSource);
+      window.setTimeout(() => setWebsiteParsed(null), 1200);
     } catch (failure) {
       setWebsiteNotice(failure instanceof Error ? failure.message : '官网写入失败');
     } finally {
@@ -450,16 +486,19 @@ export default function OperationsWorkbench() {
               status={websiteStatus}
               source={websiteSource}
               sourceUrl={websiteUrl}
-              wordFile={wordFile}
+              wordFiles={wordFiles}
               busy={websiteBusy}
               notice={websiteNotice}
               parsed={websiteParsed}
               selectedColumn={selectedColumn}
               publishResult={websitePublishResult}
               onConnect={connectWebsite}
-              onSource={setWebsiteSource}
+              onSource={(source) => {
+                setWebsiteSource(source);
+                setSelectedColumn(preferredColumn(websiteStatus, source));
+              }}
               onSourceUrl={setWebsiteUrl}
-              onFile={acceptWordFile}
+              onFiles={acceptWordFiles}
               onParse={parseWebsiteSource}
               onColumn={setSelectedColumn}
               onUpdate={updateWebsiteArticle}
@@ -555,7 +594,7 @@ type WebsiteWorkspaceProps = {
   status: WebsiteStatus | null;
   source: 'url' | 'word';
   sourceUrl: string;
-  wordFile: File | null;
+  wordFiles: File[];
   busy: BusyState;
   notice: string;
   parsed: WebsiteParseResult | null;
@@ -564,7 +603,7 @@ type WebsiteWorkspaceProps = {
   onConnect: () => void;
   onSource: (source: 'url' | 'word') => void;
   onSourceUrl: (value: string) => void;
-  onFile: (event: ChangeEvent<HTMLInputElement>) => void;
+  onFiles: (files: File[]) => void;
   onParse: () => void;
   onColumn: (column: number) => void;
   onUpdate: (patch: Partial<WebsiteArticle>) => void;
@@ -574,15 +613,48 @@ type WebsiteWorkspaceProps = {
 
 function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
   const { status, parsed, busy, notice } = props;
+  const iframeRef = useRef<HTMLIFrameElement>(null);
+  const [editingBody, setEditingBody] = useState(false);
+  const [dragging, setDragging] = useState(false);
+
+  function toggleBodyEditing() {
+    const root = iframeRef.current?.contentDocument?.getElementById('website-content');
+    if (!root) return;
+    if (!editingBody) {
+      root.setAttribute('contenteditable', 'true');
+      root.focus();
+      setEditingBody(true);
+      return;
+    }
+    const copy = root.cloneNode(true) as HTMLElement;
+    copy.removeAttribute('contenteditable');
+    copy.querySelectorAll<HTMLImageElement>('img[data-asset-ref]').forEach((image) => {
+      image.src = image.dataset.assetRef || image.src;
+      image.removeAttribute('data-asset-ref');
+    });
+    props.onUpdate({ content_html: copy.innerHTML });
+    root.removeAttribute('contenteditable');
+    setEditingBody(false);
+  }
+
+  function dropWords(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    setDragging(false);
+    props.onFiles(Array.from(event.dataTransfer.files));
+  }
+
   if (parsed) {
     return (
       <div className="result-layout website-result">
         <section className="preview-panel">
           <div className="preview-head">
             <button className="text-button" onClick={props.onReset}>返回导入</button>
-            <span className="preview-label">官网预览</span>
+            <div className="preview-actions">
+              <button className={editingBody ? 'preview-edit active' : 'preview-edit'} onClick={toggleBodyEditing}>{editingBody ? '完成正文修改' : '修改正文'}</button>
+              <span className="preview-label">官网预览</span>
+            </div>
           </div>
-          <iframe className="document-preview" title="官网文章预览" srcDoc={parsed.preview_html} sandbox="allow-same-origin" referrerPolicy="no-referrer" />
+          <iframe ref={iframeRef} className="document-preview" title="官网文章预览" srcDoc={parsed.preview_html} sandbox="allow-same-origin" referrerPolicy="no-referrer" />
         </section>
         <aside className="publish-sidebar">
           <section className="editor-panel">
@@ -592,23 +664,25 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             <label>标签<input value={parsed.article.tags.join('，')} onChange={(event) => props.onUpdate({ tags: event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) })} /></label>
             <label>栏目<select value={props.selectedColumn || ''} onChange={(event) => props.onColumn(Number(event.target.value))}><option value="">不指定栏目</option>{status?.columns.map((column) => <option value={column.id} key={column.id}>{column.title}</option>)}</select></label>
             {parsed.article.warnings.length > 0 && <div className="warning-list">{parsed.article.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
+            {parsed.article.image_issues.length > 0 && <div className="image-issues"><strong>未导入图片</strong>{parsed.article.image_issues.map((issue) => <div key={`${issue.index}-${issue.source_url}`}><span>{issue.index}. {issue.label}</span><small>{issue.message}</small>{issue.source_url && <a href={issue.source_url} target="_blank" rel="noreferrer">打开原图</a>}</div>)}</div>}
           </section>
           <section className="action-panel vertical">
             <div><strong>{status?.nickname || '极客公园官网'}</strong><small>{status?.connected ? '账号已连接' : '账号未连接'}</small></div>
             <div className="publish-buttons">
-              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
-              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
+              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={editingBody || busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
+              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={editingBody || busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
           {props.publishResult?.admin_edit_url && <a className="result-link" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">打开官网后台文章</a>}
           {props.publishResult?.public_url && <a className="result-link" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看已发布文章</a>}
+          {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载未上传的第 {issue.index} 张原图</a>)}
         </aside>
       </div>
     );
   }
 
-  const canParse = props.source === 'url' ? Boolean(props.sourceUrl.trim()) : Boolean(props.wordFile);
+  const canParse = props.source === 'url' ? Boolean(props.sourceUrl.trim()) : props.wordFiles.length > 0;
   return (
     <div className="workspace-grid website-grid">
       <section className="control-panel connection-panel">
@@ -629,15 +703,22 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
         {props.source === 'url' ? (
           <label>已发布微信文章<input value={props.sourceUrl} onChange={(event) => props.onSourceUrl(event.target.value)} placeholder="https://mp.weixin.qq.com/s/..." autoComplete="off" /></label>
         ) : (
-          <div className="file-field">
-            <input id="website-word-file" type="file" accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={props.onFile} />
-            <label className="file-button" htmlFor="website-word-file">{props.wordFile ? '更换文件' : '选择 DOCX / DOC'}</label>
-            <span>{props.wordFile?.name || '未选择文件'}</span>
+          <div
+            className={`file-dropzone ${dragging ? 'dragging' : ''}`}
+            onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
+            onDragOver={(event) => event.preventDefault()}
+            onDragLeave={() => setDragging(false)}
+            onDrop={dropWords}
+          >
+            <input id="website-word-file" type="file" multiple accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => props.onFiles(Array.from(event.target.files || []))} />
+            <label className="file-button" htmlFor="website-word-file">选择 DOCX / DOC</label>
+            <div><strong>或把多个 Word 拖到这里</strong><small>{props.wordFiles.length ? `已排队 ${props.wordFiles.length} 篇：${props.wordFiles.map((file) => file.name).join('、')}` : '支持多选，解析后逐篇审核'}</small></div>
           </div>
         )}
         <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
+      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">打开后台文章</a>}{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看公开文章</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张失败原图</a>)}</div>}
     </div>
   );
 }

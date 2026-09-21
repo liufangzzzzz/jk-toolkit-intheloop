@@ -12,6 +12,7 @@ from app import database as database_module
 from app.main import app
 from app.modules.website_ingest import parser
 from app.modules.website_ingest import publisher
+from app.modules.website_ingest.assets import save_asset
 from app.modules.website_ingest.models import WebsiteImportArticle
 
 
@@ -60,6 +61,49 @@ def test_word_parser_extracts_title_summary_and_tags(tmp_path, monkeypatch):
     assert "具身智能" in article.tags
     assert article.source_type == "docx"
     assert "<h1" not in article.content_html
+
+
+def test_sanitizer_preserves_safe_colors_and_normalizes_heading_size():
+    cleaned = parser.sanitize_fragment(
+        '<h2 style="font-size:88px;color:#A583FF;background-color:rgb(250, 240, 255);position:fixed">标题</h2>'
+        '<p style="color:#c21;background-image:url(javascript:alert(1))">正文</p>'
+    )
+
+    assert "color:#A583FF" in cleaned
+    assert "background-color:rgb(250, 240, 255)" in cleaned
+    assert "font-size:18px" in cleaned
+    assert "88px" not in cleaned
+    assert "position" not in cleaned
+    assert "javascript" not in cleaned
+
+
+def test_preview_embeds_local_images(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
+    reference = save_asset(b"png-content", "image/png")
+    article = WebsiteImportArticle(
+        title="预览图片",
+        content_html=f'<p><img src="{reference}" alt="示例"></p>',
+        source_type="docx",
+    )
+
+    preview = parser.render_preview(article)
+
+    assert 'src="data:image/png;base64,' in preview
+    assert f'data-asset-ref="{reference}"' in preview
+    assert 'id="website-content"' in preview
+
+
+def test_tag_suggestions_prioritize_company_and_person_names():
+    tags = parser.suggest_tags(
+        "Figure AI CEO 王强谈人形机器人",
+        "星河智能创始人李雷接受采访",
+        "<p>具身智能行业进入新阶段。</p>",
+    )
+
+    assert tags.index("Figure AI") < tags.index("具身智能")
+    assert "星河智能" in tags
+    assert "王强" in tags
+    assert "李雷" in tags
 
 
 def test_wechat_parser_localizes_images_and_removes_unsafe_markup(tmp_path, monkeypatch):
@@ -153,7 +197,7 @@ def test_website_publish_contract_supports_direct_publish(tmp_path, monkeypatch)
 
     async def fake_prepare(article, access_key):
         assert access_key == "test-access-key"
-        return "<p>官网正文</p>", {"url": "https://img.example/cover.jpg", "id": "cover-1"}, []
+        return "<p>官网正文</p>", {"url": "https://img.example/cover.jpg", "id": "cover-1"}, [], []
 
     class FakeResponse:
         status_code = 201
@@ -200,3 +244,75 @@ def test_website_publish_contract_supports_direct_publish(tmp_path, monkeypatch)
     assert captured["cover_id"] == "cover-1"
     assert captured["cover_url"] == "https://img.example/cover.jpg"
     assert captured["tags"] == ["机器人", "具身智能"]
+    assert "auto_publish_at" not in captured
+    assert "roles" not in captured
+    assert "column" not in captured
+    assert result["public_url"] == "https://www.geekpark.net/news/789"
+
+
+def test_post_article_sends_auth_in_query_not_json(monkeypatch):
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["query"] = dict(request.url.params)
+        captured["json"] = request.content.decode("utf-8")
+        return httpx.Response(201, json={"id": 1}, request=request)
+
+    real_client = httpx.AsyncClient
+
+    def mock_client(**kwargs):
+        return real_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(publisher.httpx, "AsyncClient", mock_client)
+    response = asyncio.run(publisher._post_article({"title": "测试"}, "access-key"))
+
+    assert response.status_code == 201
+    assert captured["query"] == {"roles": "dev", "access_key": "access-key"}
+    assert '"access_key"' not in captured["json"]
+
+
+def test_word_publish_prefers_industry_news_column(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_DATABASE_PATH", str(tmp_path / "industry.db"))
+    database_module._INITIALIZED_PATHS.discard(str((tmp_path / "industry.db").resolve()))
+    captured = {}
+
+    async def fake_connect(*, force=False):
+        return {"connected": True, "fixed_credentials": True}
+
+    async def fake_prepare(article, access_key):
+        return "<p>正文</p>", {"url": "", "id": ""}, [], []
+
+    class FakeResponse:
+        status_code = 201
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"id": 1001}
+
+    async def fake_post(payload, access_key):
+        captured.update(payload)
+        return FakeResponse()
+
+    monkeypatch.setattr(publisher, "connect_fixed_account", fake_connect)
+    monkeypatch.setattr(
+        publisher,
+        "load_settings",
+        lambda: {"website": {
+            "access_key": "key",
+            "author_id": "author",
+            "column_id": 99,
+            "columns": [{"id": 99, "title": "其他"}, {"id": 2, "title": "行业资讯"}],
+        }},
+    )
+    monkeypatch.setattr(publisher, "_prepare_images", fake_prepare)
+    monkeypatch.setattr(publisher, "_post_article", fake_post)
+
+    asyncio.run(publisher.publish_article(
+        WebsiteImportArticle(title="Word 稿", content_html="<p>正文</p>", source_type="docx"),
+        mode="draft",
+        column_id=None,
+        request_id="industry-column-1",
+    ))
+
+    assert captured["column_id"] == 2

@@ -22,7 +22,7 @@ _EDITOR_PREFIX = "编辑｜"
 _BODY_FONT_CSS = f"font-family:{_FONT_STACK};"
 _PARAGRAPH_CSS = (
     f"{_BODY_FONT_CSS}font-size:16px;line-height:1.75;"
-    "margin:0 8px 24px;text-align:justify;"
+    "color:rgb(0,0,0);margin:0 8px 24px;text-align:justify;text-indent:0;"
 )
 _QUESTION_CSS = (
     f"{_BODY_FONT_CSS}color:rgb(165, 131, 255);font-size:16px;"
@@ -31,7 +31,7 @@ _QUESTION_CSS = (
 )
 _IMAGE_CSS = (
     "max-width:100%;height:auto;display:block;margin-left:auto;"
-    "margin-right:auto;margin-top:12px;margin-bottom:24px;object-fit:contain;"
+    "margin-right:auto;margin-top:24px;margin-bottom:24px;object-fit:contain;"
 )
 _CAPTION_CSS = (
     f"{_BODY_FONT_CSS}font-size:14px;line-height:1.6;margin:0 8px 24px;"
@@ -44,42 +44,41 @@ _OPENING_PLACEHOLDER_CSS = (
 )
 _FOOTER_CSS = (
     f"{_BODY_FONT_CSS}font-size:14px;text-align:justify;"
-    "color:rgb(136, 136, 136);margin:0;line-height:1.6;"
+    "color:rgb(136, 136, 136);margin:0 0 24px;line-height:1.6;"
 )
 _FOOTER_SECTION_CSS = (
     "font-family:Optima-Regular,PingFangTC-light,'PingFang SC',"
     "'PingFang TC','Hiragino Sans GB','Microsoft YaHei',sans-serif;"
-    "padding:12px 8px;border-top:1px solid rgb(238, 238, 238);"
+    "margin-top:32px;padding:12px 8px 0;border-top:1px solid rgb(238, 238, 238);"
 )
 
 _DIGEST_SHELL_CSS = (
-    "box-sizing:border-box;margin:0 8px 24px;aspect-ratio:2.5 / 1;"
-    "padding:6.5% 3.1% 5.5%;overflow:hidden;"
+    "box-sizing:border-box;margin:0 8px 24px;padding:24px 20px;overflow:hidden;"
     "background:linear-gradient(100deg,rgb(111, 199, 255) 0%,"
     "rgb(173, 132, 253) 52%,rgb(243, 142, 239) 100%);color:rgb(255, 255, 255);"
     f"font-family:{_FONT_STACK};"
 )
 _DIGEST_TITLE_CSS = (
-    "margin:0 0 3.7%;font-size:clamp(16px,4.6vw,31px);font-weight:400;"
+    "margin:0 0 18px;font-size:24px;font-weight:700;"
     "line-height:1.2;letter-spacing:0;color:rgb(255, 255, 255);"
 )
 _DIGEST_TEXT_CSS = (
-    "margin:0;font-size:clamp(14px,4.1vw,27px);font-weight:400;"
-    "line-height:1.35;letter-spacing:0;text-align:left;color:rgb(255, 255, 255);"
+    "margin:0;font-size:18px;font-weight:700;"
+    "line-height:1.55;letter-spacing:0;text-align:left;color:rgb(255, 255, 255);"
 )
 _PLACEHOLDER_TEXT_CSS = (
-    "margin:0;font-size:clamp(15px,4.4vw,28px);font-weight:400;"
+    "margin:0;font-size:18px;font-weight:700;"
     "line-height:1.35;letter-spacing:0;text-align:left;color:rgb(255, 255, 255);"
 )
 _AUTHOR_EDITOR_CSS = (
     f"color:{_AUTHOR_EDITOR_COLOR};margin:0;line-height:1.5;"
     f"font-size:16px;font-weight:700;text-align:left;{_BODY_FONT_CSS}"
 )
-_HEADING_IMAGE_WIDTHS = ["10%", "12%", "12%"]
+_HEADING_IMAGE_WIDTHS = ["50px", "50px", "50px"]
 _HEADING_IMAGE_URLS = [
     "https://mmbiz.qpic.cn/mmbiz_png/ewz3sfllJmfdQeMz9ZnnMLqjbxglVhtnZTZmdjRZLicmbuiaPibBt9naJORe3OvAIeOt8PNMVpyFS5xEdkOtgoqKLTZ9fbz95WVIJmqX4D3uqY/640?wx_fmt=png&from=appmsg#imgIndex=4",
-    "https://mmbiz.qpic.cn/mmbiz_png/ewz3sfllJmcuCQ36yH5LqBTSib0ibLePvbNkwtFkSsmWWhC7823tEK6TqfgRJ2NMzKDWMOYYC4zjxpxefs2xa2UibGBHYMicTSVdKIJx3LDdhYI/640?wx_fmt=png&from=appmsg#imgIndex=7",
-    "https://mmbiz.qpic.cn/sz_mmbiz_png/ewz3sfllJmcZXmoiah6EOb5DnZU73Oplnt4tCQiboGbomUicdpJjxeKH79WKWUhYzoRpCHGicX1CjafzRysGG5gtEDS98lzgo2zkasJAMNYmUoU/640?wx_fmt=png&from=appmsg#imgIndex=11",
+    "https://mmbiz.qpic.cn/sz_mmbiz_png/ewz3sfllJmdFD6iaGLvkG0Gfd2o9PrK3qiaMwp6AXsKypMPS1oRtTshCdV3aMDmJ9LAhXt254iaZGoFicTwndzFS5X9vgkFf8owFibBV3icbU2dCY/640?wx_fmt=png&from=appmsg",
+    "https://mmbiz.qpic.cn/sz_mmbiz_png/ewz3sfllJmdd8IK2XAP29FvnwCWrSQA9OnGj1lu4pH71JJ1VpGkHheoVicHfSZaRtO2NDC0p0icJPD8urE7ahg6WsXiaJDfML82TticU9SfO3bw/640?wx_fmt=png&from=appmsg",
 ]
 _FOOTER_IMAGE_URL = (
     "https://mmbiz.qpic.cn/sz_mmbiz_jpg/ewz3sfllJmf47sMoBPHF67s1LbtXX1wXviaE5QV5rmicP8vORjXHlWLncKoMxRcejPjjWurF9q6G59bCIuWOKBv62mHoAzCAWsz7UO0hYZkLY/640?wx_fmt=jpeg&from=appmsg"
@@ -101,13 +100,13 @@ def _rich_text(raw: str) -> str:
     escaped = html.escape(str(raw or ""), quote=False)
     escaped = re.sub(
         r"\*\*\*(.+?)\*\*\*",
-        r"<strong><em>\1</em></strong>",
+        r'<strong style="color:#A583FF;font-weight:700;"><em>\1</em></strong>',
         escaped,
         flags=re.S,
     )
     escaped = re.sub(
         r"\*\*(.+?)\*\*",
-        r"<strong>\1</strong>",
+        r'<strong style="color:#A583FF;font-weight:700;">\1</strong>',
         escaped,
         flags=re.S,
     )
@@ -195,10 +194,12 @@ def _heading_number_image(index: int, *, preview: bool = False) -> str:
 def _heading_html(block: InTheLoopBlock, index: int, *, preview: bool = False) -> str:
     title = _rich_text(block.content.strip())
     return (
-        f'<section style="margin:0 8px 24px;text-align:center;">'
+        f'<section style="margin:16px 8px 24px;text-align:center;">'
         f"{_heading_number_image(index, preview=preview)}"
-        f'<p style="font-size:18px;line-height:1.45;font-weight:bold;'
-        f'color:rgb(0,0,0);margin:4px 0 0;">{title}</p>'
+        "</section>"
+        f'<section style="margin:0 8px 24px;text-align:center;">'
+        f'<p style="font-family:{_FONT_STACK};font-size:18px;line-height:1.45;'
+        f'font-weight:700;color:rgb(0,0,0);margin:0;">{title}</p>'
         "</section>"
     )
 
@@ -322,7 +323,7 @@ def _footer_html(article: InTheLoopArticle, *, preview: bool = False) -> str:
     image = (
         f'<img src="{html.escape(_template_image_src("footer", preview=preview), quote=True)}"'
         f'{_style_attr("display:block;width:100%;max-width:661px;height:auto;"
-                       "margin:12px auto 0;vertical-align:bottom;")}'
+                       "margin:0 auto;vertical-align:bottom;")}'
         ' alt="">'
     )
     return f'<section{_style_attr(_FOOTER_SECTION_CSS)}>{"".join(lines)}{image}</section>'

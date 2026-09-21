@@ -13,8 +13,20 @@ from ...geekpark_auth import list_geekpark_columns, login_geekpark
 from ...settings_store import load_settings, update_settings
 from .assets import read_asset
 from .models import WebsiteImportArticle
+from .parser import sanitize_fragment
 
 _ASSET_RE = re.compile(r"ingest-asset://[a-f0-9]{32}\.[a-z0-9]{1,8}")
+
+
+def _industry_column_id(columns: list[dict[str, Any]]) -> int:
+    exact = next((item for item in columns if str(item.get("title") or "").strip() == "行业资讯"), None)
+    partial = next((item for item in columns if "行业资讯" in str(item.get("title") or "")), None)
+    candidate = exact or partial
+    if candidate:
+        return int(candidate.get("id") or 0)
+    if any(int(item.get("id") or 0) == 2 for item in columns):
+        return 2
+    return 0
 
 
 def connection_status() -> dict[str, Any]:
@@ -49,7 +61,7 @@ async def connect_fixed_account(*, force: bool = False) -> dict[str, Any]:
     current_column = int(current.get("column_id") or 0)
     valid_ids = {int(item["id"]) for item in columns}
     if current_column not in valid_ids:
-        current_column = int(columns[0]["id"]) if columns else 0
+        current_column = _industry_column_id(columns) or (int(columns[0]["id"]) if columns else 0)
     update_settings(
         "website",
         access_key=result.access_key,
@@ -90,19 +102,28 @@ async def _upload_image(reference: str, access_key: str) -> dict[str, Any]:
 async def _prepare_images(
     article: WebsiteImportArticle,
     access_key: str,
-) -> tuple[str, dict[str, Any], list[str]]:
+) -> tuple[str, dict[str, Any], list[str], list[dict[str, Any]]]:
     warnings = list(article.warnings)
     references = list(dict.fromkeys(_ASSET_RE.findall(article.content_html)))
     if article.cover_asset and article.cover_asset not in references:
         references.insert(0, article.cover_asset)
     uploaded: dict[str, dict[str, Any]] = {}
-    for reference in references:
+    failed_images: list[dict[str, Any]] = []
+    for index, reference in enumerate(references, start=1):
         try:
             uploaded[reference] = await _upload_image(reference, access_key)
         except PermissionError:
             raise
         except Exception as exc:
-            warnings.append(str(exc))
+            token = reference.removeprefix("ingest-asset://")
+            message = str(exc)[:180] or "官网图片上传失败"
+            failed_images.append({
+                "index": index,
+                "label": f"第 {index} 张图片",
+                "asset_url": f"/api/v1/website-import/assets/{token}?download=true",
+                "message": message,
+            })
+            warnings.append(f"第 {index} 张图片上传失败：{message}；可下载原图后在官网后台手动补回")
     content = article.content_html
     for reference, image in uploaded.items():
         content = content.replace(reference, image["url"])
@@ -116,7 +137,7 @@ async def _prepare_images(
         cover = uploaded.get(first_reference) if first_reference else None
     if not cover:
         warnings.append("来源中没有可用图片，官网文章未自动设置头图")
-    return str(soup), cover or {"url": "", "id": ""}, warnings
+    return str(soup), cover or {"url": "", "id": ""}, warnings, failed_images
 
 
 def _existing_result(request_id: str) -> dict[str, Any] | None:
@@ -138,17 +159,19 @@ def _existing_result(request_id: str) -> dict[str, Any] | None:
         "admin_edit_url": row["admin_url"],
         "state": row["state"],
         "warnings": json.loads(row["warnings_json"] or "[]"),
+        "failed_images": [],
         "duplicate_prevented": True,
     }
 
 
 async def _post_article(payload: dict[str, Any], access_key: str) -> httpx.Response:
     base = os.environ.get("WEBSITE_GEEKPARK_API_BASE", "https://mainssl.geekpark.net").rstrip("/")
-    request_payload = {**payload, "access_key": access_key}
+    roles = os.environ.get("WEBSITE_GEEKPARK_ROLES", "dev").strip()
     async with httpx.AsyncClient(timeout=60) as client:
         return await client.post(
             f"{base}/api/v1/admin/posts",
-            json=request_payload,
+            params={"roles": roles, "access_key": access_key},
+            json=payload,
             headers={"content-type": "application/json; charset=utf-8"},
         )
 
@@ -169,8 +192,9 @@ async def publish_article(
     author_id = saved.get("author_id")
     if not access_key or author_id is None:
         raise RuntimeError("官网账号尚未连接")
+    article = article.model_copy(update={"content_html": sanitize_fragment(article.content_html)})
     try:
-        content, cover, warnings = await _prepare_images(article, access_key)
+        content, cover, warnings, failed_images = await _prepare_images(article, access_key)
     except PermissionError:
         if not connection_status()["fixed_credentials"]:
             raise
@@ -178,29 +202,25 @@ async def publish_article(
         saved = load_settings().get("website") or {}
         access_key = str(saved.get("access_key") or "").strip()
         author_id = saved.get("author_id")
-        content, cover, warnings = await _prepare_images(article, access_key)
-    resolved_column = int(column_id or saved.get("column_id") or 0)
+        content, cover, warnings, failed_images = await _prepare_images(article, access_key)
+    columns = saved.get("columns") or []
+    default_column = _industry_column_id(columns) if article.source_type in {"doc", "docx"} else 0
+    resolved_column = int(column_id or default_column or saved.get("column_id") or 0)
     state = "published" if mode == "publish" else "unpublished"
     payload = {
-        "roles": os.environ.get("WEBSITE_GEEKPARK_ROLES", "dev").strip(),
         "content_type": "html",
         "content_source": content,
         "title": article.title,
         "abstract": article.abstract,
         "tags": list(dict.fromkeys(tag.strip() for tag in article.tags if tag.strip()))[:10],
-        "column": [],
         "column_id": resolved_column,
-        "cover_id": cover.get("id") or "",
-        "cover_url": cover.get("url") or "",
-        "authors_full": [],
         "authors": [author_id],
-        "auto_publish_at": "",
         "state": state,
-        "video_id": "",
-        "audio_id": "",
         "post_type": "text",
-        "histories": [],
     }
+    if cover.get("id") and cover.get("url"):
+        payload["cover_id"] = cover["id"]
+        payload["cover_url"] = cover["url"]
     response = await _post_article(payload, access_key)
     if response.status_code in {401, 403} and connection_status()["fixed_credentials"]:
         await connect_fixed_account(force=True)
@@ -212,12 +232,14 @@ async def publish_article(
         detail = response.text[:300]
         raise RuntimeError(f"官网{'发布' if mode == 'publish' else '草稿创建'}失败（HTTP {response.status_code}）：{detail}")
     result = response.json()
-    article_id = result.get("id")
+    result_post = result.get("post") if isinstance(result.get("post"), dict) else {}
+    article_id = result.get("id") or result_post.get("id")
     if article_id is None:
         raise RuntimeError("官网响应缺少文章 ID")
     admin_base = os.environ.get("WEBSITE_GEEKPARK_ADMIN_BASE", "https://admin.geekpark.net").rstrip("/")
     admin_url = f"{admin_base}/posts/new?id={article_id}"
-    public_url = str(result.get("url") or result.get("post_url") or "")
+    public_base = os.environ.get("WEBSITE_GEEKPARK_PUBLIC_BASE", "https://www.geekpark.net").rstrip("/")
+    public_url = f"{public_base}/news/{article_id}" if mode == "publish" else ""
     with database() as connection:
         connection.execute(
             """
@@ -245,6 +267,7 @@ async def publish_article(
         "admin_edit_url": admin_url,
         "state": state,
         "warnings": warnings,
+        "failed_images": failed_images,
         "duplicate_prevented": False,
     }
 
