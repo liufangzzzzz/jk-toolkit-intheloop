@@ -1,8 +1,8 @@
 # In The Loop 运营工作台
 
-仅供内部使用的双 Tab 内容运营工具。前后端和发布模块都包含在本项目内，不依赖旧 Chrome 插件或其他业务项目。
+仅供内部使用的统一内容运营工具。前后端、AI 网关和发布模块都包含在本项目内；公开中英文官网位于独立仓库 `Geekpark-hub/intheloop`。
 
-## 两个工作流
+## 四个工作流
 
 ### 公众号草稿
 
@@ -24,6 +24,20 @@
 - 官网账号密码只从服务器环境变量读取，不在浏览器中输入
 - 提供带 API Key 和幂等键的独立 Agent API
 
+### InTheLoop 独立站
+
+- 粘贴微信、官网或播客链接并整理中英文版本
+- 维护统一的大、中、小三级标签库和地图展示层级
+- 中文保留原链接，英文正文发布到独立官网
+- 独立官网只读取已发布快照，不读取草稿或管理配置
+
+### 音频整理
+
+- 读取文本、字幕、飞书妙记、YouTube、Bilibili 与音频素材
+- 生成原版、清洗版和简版，并支持自然语言纠错
+- 稿件单独基于清洗版生成
+- 可复制结果或以用户身份导出飞书文档
+
 ## 本机测试
 
 在 Finder 中双击 `scripts/local-preview.command`，或在终端运行：
@@ -38,7 +52,7 @@
 
 ### 不连接真实账号也能检查
 
-1. 登录后切换两个 Tab，确认手机和电脑布局。
+1. 登录后切换四个 Tab，确认手机和电脑布局。
 2. 在“公众号草稿”中粘贴互联网用户可阅读的飞书链接，检查标题、作者、Why It Matters、图片和全文预览。
 3. 在“极客公园官网”中上传 `.docx`，检查正文、自动标签、头图和栏目。
    可一次选择多个 Word，系统每次打开一篇供审核；完成后自动回到队列。
@@ -62,6 +76,7 @@ ITL_SESSION_SECRET=一段足够长的随机字符串
 GEEKPARK_LOGIN_NAME=官网账号
 GEEKPARK_LOGIN_PASSWORD=官网密码
 ITL_AGENT_API_KEY=供其他 Agent 调用的随机密钥
+MODELINK_API_KEY=Modelink 提供的 API Key
 ```
 
 微信公众号 AppID / AppSecret 可以在登录后的公众号 Tab 保存，也可以使用 `.env` 中的 `WECHAT_APP_ID` 和 `WECHAT_APP_SECRET`。
@@ -69,6 +84,10 @@ ITL_AGENT_API_KEY=供其他 Agent 调用的随机密钥
 直接发布成功后，公开文章链接固定使用 `https://www.geekpark.net/news/{文章ID}`；后台编辑链接仅用于继续修改，不再冒充公开链接。
 
 完整开发交接见 `docs/DEVELOPMENT_GUIDE.md`，部署步骤见 `docs/BAOTA_DEPLOY.md`，Agent 调用见 `docs/AGENT_API.md`。
+
+工作台与独立官网的分仓部署见 `docs/INTHELOOP_DEPLOY.md`。
+
+如果不清楚 API Key 和账号应该填在哪里，直接把 `docs/ENV_SETUP.md` 交给部署人员即可。
 
 ## 验证命令
 

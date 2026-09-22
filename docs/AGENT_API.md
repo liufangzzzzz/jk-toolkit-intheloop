@@ -39,7 +39,7 @@ curl -X POST 'https://toolkit-intheloop.geekpark.net/api/v1/agent/website/import
   -F 'idempotency_key=source-system:document-456:v1'
 ```
 
-支持 `.docx` 和 `.doc`，单个文件最大 30MB。
+支持 `.docx` 和 `.doc`，单个文件最大 60MB。
 `column_id` 留空时，Word 会优先匹配官网的“行业资讯”栏目；调用方传入明确栏目 ID 时以传入值为准。
 
 发布结果会分别返回：

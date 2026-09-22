@@ -133,7 +133,7 @@ GET  /api/v1/wechat-draft/history
 
 - 已发布的 `https://mp.weixin.qq.com/...` 文章链接
 - `.docx` 文件
-- `.doc` 文件，最大 30MB
+- `.doc` 文件，最大 60MB
 
 ### 处理
 

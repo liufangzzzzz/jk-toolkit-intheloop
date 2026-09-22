@@ -18,8 +18,9 @@ import tinycss2
 
 from .assets import read_asset, save_asset
 from .models import WebsiteImageIssue, WebsiteImportArticle
+from .tags import suggest_tags
 
-_MAX_DOCUMENT_BYTES = 30 * 1024 * 1024
+_MAX_DOCUMENT_BYTES = 60 * 1024 * 1024
 _MAX_IMAGE_BYTES = 15 * 1024 * 1024
 _WECHAT_HOSTS = {"mp.weixin.qq.com"}
 _ALLOWED_TAGS = {
@@ -36,63 +37,8 @@ _SAFE_STYLE_PROPERTIES = {
     "padding-top", "text-align", "text-decoration", "vertical-align", "width",
 }
 _FORBIDDEN_STYLE_VALUE = re.compile(r"(?:url\s*\(|expression\s*\(|javascript:|@import|var\s*\()", re.I)
-_TAG_RULES = [
-    ("具身智能", ("具身智能", "embodied ai", "embodied intelligence")),
-    ("人形机器人", ("人形机器人", "humanoid")),
-    ("机器人", ("机器人", "robot")),
-    ("人工智能", ("人工智能", " ai ", "大模型", "模型")),
-    ("自动驾驶", ("自动驾驶", "智驾")),
-    ("芯片", ("芯片", "gpu", "算力")),
-    ("创业", ("创业", "创始人")),
-    ("融资", ("融资", "投资", "资本")),
-]
-
-
 def _plain_text(value: str) -> str:
     return re.sub(r"\s+", " ", BeautifulSoup(value or "", "html.parser").get_text(" ", strip=True)).strip()
-
-
-def suggest_tags(title: str, abstract: str, content_html: str) -> list[str]:
-    source = f"{title} {abstract} {_plain_text(content_html)[:8000]}"
-    haystack = f" {source} ".lower()
-    tags: list[str] = []
-
-    def add(value: str) -> None:
-        cleaned = re.sub(r"\s+", " ", value).strip(" ，。；：:、（）()《》\"'")
-        if cleaned and cleaned not in tags:
-            tags.append(cleaned)
-
-    generic = {"人工智能", "具身智能", "人形机器人", "机器人", "科技公司", "有限公司"}
-    company_pattern = re.compile(
-        r"(?<![\u4e00-\u9fff])([A-Z][A-Za-z0-9.+-]*(?:\s+[A-Z][A-Za-z0-9.+-]*){0,3})(?=[\s，。；：:、（）()]|$)"
-        r"|([\u4e00-\u9fffA-Za-z0-9]{2,14}(?:科技|智能|机器人|集团|资本|创投|研究院|实验室|公司))"
-    )
-    for match in company_pattern.finditer(source):
-        candidate = match.group(1) or match.group(2) or ""
-        candidate = re.sub(r"\s+(?:CEO|CTO|COO|创始人|董事长|总裁)$", "", candidate, flags=re.I)
-        if (
-            candidate not in generic
-            and not candidate.isdigit()
-            and not re.search(r"(?:表示|认为|进入|接受|发布|谈|这是一|一篇|一种|一个|具身|人形|人工|行业|文章|测试)", candidate)
-        ):
-            add(candidate)
-        if len(tags) >= 6:
-            break
-
-    person_patterns = [
-        re.compile(r"(?:创始人|联合创始人|CEO|董事长|总裁|负责人|作者|嘉宾)[\s：:]*([\u4e00-\u9fff]{2,4}?)(?=表示|认为|说|谈|接受|出席|发布|加入|[\s，。；：:]|$)"),
-        re.compile(r"(?:^|[\n。！？])([\u4e00-\u9fff]{2,4})[：:]"),
-    ]
-    for pattern in person_patterns:
-        for match in pattern.finditer(source):
-            add(match.group(1))
-            if len(tags) >= 8:
-                break
-
-    for label, needles in _TAG_RULES:
-        if any(needle.lower() in haystack for needle in needles):
-            add(label)
-    return (tags or ["In The Loop"])[:10]
 
 
 def _safe_http_url(raw: str, *, base_url: str = "") -> str:
@@ -314,7 +260,7 @@ def _convert_legacy_doc(raw: bytes, filename: str) -> bytes:
 
 def parse_word_file(raw: bytes, filename: str) -> WebsiteImportArticle:
     if not raw or len(raw) > _MAX_DOCUMENT_BYTES:
-        raise ValueError("Word 文件为空或超过 30MB")
+        raise ValueError("Word 文件为空或超过 60MB")
     suffix = Path(filename or "").suffix.lower()
     if suffix not in {".docx", ".doc"}:
         raise ValueError("只支持 .docx 或 .doc 文件")
@@ -381,7 +327,7 @@ def render_preview(article: WebsiteImportArticle) -> str:
         '#website-content p{margin:0 0 20px}img{display:block;max-width:100%;height:auto;margin:24px auto}'
         'table{width:100%;border-collapse:collapse}'
         'td,th{padding:8px;border:1px solid #ddd}blockquote{margin:20px 0;padding-left:18px;border-left:3px solid #111;color:#555}'
-        '#website-content[contenteditable="true"]{outline:2px solid #9a83fb;outline-offset:10px}'
+        '#website-content[contenteditable="true"]{outline:2px solid #a583ff;outline-offset:10px}'
         '</style></head><body><article><h1>'
         + article.title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         + '</h1><div id="website-content">' + content + '</div></article></body></html>'

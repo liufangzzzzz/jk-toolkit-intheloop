@@ -28,6 +28,14 @@ services:
       TOOLKIT_INTHELOOP_PASSWORD: ${TOOLKIT_INTHELOOP_PASSWORD:-}
       ITL_SESSION_SECRET: ${ITL_SESSION_SECRET:-}
       FEISHU_FETCH_MODE: ${FEISHU_FETCH_MODE:-public}
+      FEISHU_APP_ID: ${FEISHU_APP_ID:-}
+      FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
+      FEISHU_USER_ACCESS_TOKEN: ${FEISHU_USER_ACCESS_TOKEN:-}
+      FEISHU_USER_REFRESH_TOKEN: ${FEISHU_USER_REFRESH_TOKEN:-}
+      FEISHU_API_BASE: ${FEISHU_API_BASE:-https://open.feishu.cn/open-apis}
+      FEISHU_DOC_ORIGIN: ${FEISHU_DOC_ORIGIN:-https://geek.feishu.cn/docx}
+      YTDLP_BIN: ${YTDLP_BIN:-}
+      XYZ_BIN: ${XYZ_BIN:-}
       WECHAT_APP_ID: ${WECHAT_APP_ID:-wx0ad9c0e3d4f70a6c}
       WECHAT_APP_SECRET: ${WECHAT_APP_SECRET:-}
       WECHAT_ACCOUNT_NAME: ${WECHAT_ACCOUNT_NAME:-In The Loop.具身现场}
@@ -40,6 +48,8 @@ services:
       WEBSITE_GEEKPARK_PUBLIC_BASE: ${WEBSITE_GEEKPARK_PUBLIC_BASE:-https://www.geekpark.net}
       WEBSITE_GEEKPARK_ROLES: ${WEBSITE_GEEKPARK_ROLES:-dev}
       ITL_AGENT_API_KEY: ${ITL_AGENT_API_KEY:-}
+      MODELINK_API_KEY: ${MODELINK_API_KEY:-}
+      MODELINK_BASE_URL: ${MODELINK_BASE_URL:-https://api.qnaigc.com/v1}
     volumes:
       - public-image-cache:/tmp/intheloop-public-images
       - toolkit-settings:/data

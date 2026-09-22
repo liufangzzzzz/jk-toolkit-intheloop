@@ -1,5 +1,6 @@
 'use client';
 
+import { api, validateWebsiteParseResult } from '../../lib/api';
 import { DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type Tool = 'wechat' | 'website';
@@ -107,27 +108,12 @@ function requestId(prefix: string): string {
   return `${prefix}:${id}`;
 }
 
-async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const headers = new Headers(init.headers);
-  if (!(init.body instanceof FormData) && !headers.has('Content-Type')) {
-    headers.set('Content-Type', 'application/json');
-  }
-  const response = await fetch(`/api/v1${path}`, {
-    ...init,
-    headers,
-    credentials: 'include',
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const detail = payload?.detail;
-    const message = typeof detail === 'string' ? detail : detail?.message;
-    throw new Error(message || '请求失败');
-  }
-  return payload as T;
-}
-
 export default function OperationsWorkbench() {
-  const [tool, setTool] = useState<Tool>('wechat');
+  const [tool, setTool] = useState<Tool>(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('tool') === 'website'
+      ? 'website'
+      : 'wechat',
+  );
   const [checkingAuth, setCheckingAuth] = useState(true);
   const [backendConnected, setBackendConnected] = useState(true);
   const [authenticated, setAuthenticated] = useState(false);
@@ -328,14 +314,16 @@ export default function OperationsWorkbench() {
   }
 
   function acceptWordFiles(files: File[]) {
-    const accepted = files.filter((file) => /\.(docx?|DOCX?)$/.test(file.name));
+    const words = files.filter((file) => /\.docx?$/i.test(file.name));
+    const oversized = words.filter((file) => file.size > 60 * 1024 * 1024);
+    const accepted = words.filter((file) => file.size <= 60 * 1024 * 1024);
     setWordFiles((current) => {
       const all = [...current, ...accepted];
       return all.filter((file, index) => all.findIndex((candidate) => (
         candidate.name === file.name && candidate.size === file.size && candidate.lastModified === file.lastModified
       )) === index);
     });
-    setWebsiteNotice('');
+    setWebsiteNotice(oversized.length ? `以下文件超过单份 60 MB 限制：${oversized.map((file) => file.name).join('、')}` : files.length !== words.length ? '仅支持 DOCX / DOC 文件。' : '');
   }
 
   async function parseWebsiteSource() {
@@ -359,9 +347,10 @@ export default function OperationsWorkbench() {
           method: 'POST',
           body: form,
         });
-        setWordFiles((current) => current.slice(1));
       }
+      validateWebsiteParseResult(parsed);
       setWebsiteParsed(parsed);
+      if (websiteSource === 'word') setWordFiles((current) => current.slice(1));
       setSelectedColumn(preferredColumn(websiteStatus, websiteSource));
       setWebsiteRequestId(requestId('website'));
     } catch (failure) {
@@ -425,6 +414,8 @@ export default function OperationsWorkbench() {
           <nav className="tool-tabs" aria-label="运营工具">
             <button className={tool === 'wechat' ? 'active' : ''} onClick={() => setTool('wechat')}>公众号草稿</button>
             <button className={tool === 'website' ? 'active' : ''} onClick={() => setTool('website')}>极客公园官网</button>
+            <a href="/ops/intheloop">InTheLoop 独立站</a>
+            <a href="/ops/audio">音频整理</a>
           </nav>
         )}
         <div className="topbar-actions">
@@ -616,6 +607,20 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [editingBody, setEditingBody] = useState(false);
   const [dragging, setDragging] = useState(false);
+  const dragDepth = useRef(0);
+
+  function enterWords(event: DragEvent<HTMLDivElement>) {
+    if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+    event.preventDefault();
+    dragDepth.current += 1;
+    setDragging(true);
+  }
+
+  function leaveWords(event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+    dragDepth.current = Math.max(0, dragDepth.current - 1);
+    if (dragDepth.current === 0) setDragging(false);
+  }
 
   function toggleBodyEditing() {
     const root = iframeRef.current?.contentDocument?.getElementById('website-content');
@@ -639,6 +644,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
 
   function dropWords(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
+    dragDepth.current = 0;
     setDragging(false);
     props.onFiles(Array.from(event.dataTransfer.files));
   }
@@ -661,7 +667,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             <div className="meta-title"><span className="success-pill">解析完成</span><small>{parsed.article.cover_asset ? '已选取头图' : '无头图'}</small></div>
             <label>标题<input value={parsed.article.title} onChange={(event) => props.onUpdate({ title: event.target.value })} /></label>
             <label>摘要<textarea value={parsed.article.abstract} onChange={(event) => props.onUpdate({ abstract: event.target.value })} maxLength={500} /></label>
-            <label>标签<input value={parsed.article.tags.join('，')} onChange={(event) => props.onUpdate({ tags: event.target.value.split(/[，,]/).map((tag) => tag.trim()).filter(Boolean).slice(0, 10) })} /></label>
+            <TagEditor tags={parsed.article.tags} onChange={(tags) => props.onUpdate({ tags })} />
             <label>栏目<select value={props.selectedColumn || ''} onChange={(event) => props.onColumn(Number(event.target.value))}><option value="">不指定栏目</option>{status?.columns.map((column) => <option value={column.id} key={column.id}>{column.title}</option>)}</select></label>
             {parsed.article.warnings.length > 0 && <div className="warning-list">{parsed.article.warnings.map((warning) => <p key={warning}>{warning}</p>)}</div>}
             {parsed.article.image_issues.length > 0 && <div className="image-issues"><strong>未导入图片</strong>{parsed.article.image_issues.map((issue) => <div key={`${issue.index}-${issue.source_url}`}><span>{issue.index}. {issue.label}</span><small>{issue.message}</small>{issue.source_url && <a href={issue.source_url} target="_blank" rel="noreferrer">打开原图</a>}</div>)}</div>}
@@ -705,20 +711,52 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
         ) : (
           <div
             className={`file-dropzone ${dragging ? 'dragging' : ''}`}
-            onDragEnter={(event) => { event.preventDefault(); setDragging(true); }}
-            onDragOver={(event) => event.preventDefault()}
-            onDragLeave={() => setDragging(false)}
+            onDragEnter={enterWords}
+            onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; }}
+            onDragLeave={leaveWords}
             onDrop={dropWords}
           >
-            <input id="website-word-file" type="file" multiple accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => props.onFiles(Array.from(event.target.files || []))} />
+            <input id="website-word-file" type="file" multiple accept=".doc,.docx,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => { props.onFiles(Array.from(event.target.files || [])); event.target.value = ''; }} />
             <label className="file-button" htmlFor="website-word-file">选择 DOCX / DOC</label>
-            <div><strong>或把多个 Word 拖到这里</strong><small>{props.wordFiles.length ? `已排队 ${props.wordFiles.length} 篇：${props.wordFiles.map((file) => file.name).join('、')}` : '支持多选，解析后逐篇审核'}</small></div>
+            <div><strong>{dragging ? '松开即可添加 Word 文件' : '或把多个 Word 拖到这里'}</strong><small>{props.wordFiles.length ? `已排队 ${props.wordFiles.length} 篇：${props.wordFiles.map((file) => file.name).join('、')}` : '每份最大 60 MB；支持多选，解析后逐篇审核'}</small></div>
           </div>
         )}
         <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
       {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">打开后台文章</a>}{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看公开文章</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张失败原图</a>)}</div>}
+    </div>
+  );
+}
+
+function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
+  const [draft, setDraft] = useState('');
+  const [message, setMessage] = useState('');
+  function addTags() {
+    const additions = draft.split(/[，,；;\n]/).map((tag) => tag.trim()).filter(Boolean);
+    const next = [...new Set([...tags, ...additions])];
+    if (next.length > 10) {
+      setMessage('最多添加 10 个标签，请先删除不需要的标签。');
+      return;
+    }
+    onChange(next);
+    setDraft('');
+    setMessage('');
+  }
+  return (
+    <div className="tag-editor">
+      <label htmlFor="website-tag-input">标签</label>
+      <div className="tag-chips">{tags.map((tag) => (
+        <span className="tag-chip" key={tag}>{tag}<button type="button" aria-label={`删除标签 ${tag}`} onClick={() => { onChange(tags.filter((item) => item !== tag)); setMessage(''); }}>×</button></span>
+      ))}</div>
+      <div className="tag-add-row">
+        <input id="website-tag-input" value={draft} placeholder="输入标签，回车添加" onChange={(event) => setDraft(event.target.value)} onBlur={addTags} onKeyDown={(event) => {
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); addTags(); }
+        }} />
+        <button type="button" className="secondary-button" onClick={addTags} disabled={!draft.trim()}>添加</button>
+      </div>
+      <small className="inline-help">优先推荐公司、创始人、行业和产品；可删除或自行添加，最多 10 个。</small>
+      {message && <p className="operation-notice error" role="alert">{message}</p>}
     </div>
   );
 }

@@ -27,6 +27,9 @@ from .modules.wechat_draft.routes import router as wechat_draft_router
 from .modules.website_ingest.routes import agent_router as website_agent_router
 from .modules.website_ingest.routes import router as website_ingest_router
 
+from .modules.atlas.routes import router as atlas_router, public_router as atlas_public_router
+from .modules.atlas.audio_studio import router as audio_studio_router
+
 load_dotenv()
 
 app = FastAPI(title="In The Loop 运营工作台", version="2.0.0")
@@ -44,6 +47,9 @@ app.add_middleware(
 app.include_router(wechat_draft_router)
 app.include_router(website_ingest_router)
 app.include_router(website_agent_router)
+app.include_router(atlas_router)
+app.include_router(atlas_public_router)
+app.include_router(audio_studio_router)
 
 
 class LoginRequest(BaseModel):

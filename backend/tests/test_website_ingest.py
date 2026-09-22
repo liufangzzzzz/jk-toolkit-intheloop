@@ -316,3 +316,15 @@ def test_word_publish_prefers_industry_news_column(tmp_path, monkeypatch):
     ))
 
     assert captured["column_id"] == 2
+
+
+def test_word_size_boundary_accepts_limit_and_rejects_larger(tmp_path, monkeypatch):
+    import pytest
+    raw = _minimal_docx()
+    assert parser._MAX_DOCUMENT_BYTES == 60 * 1024 * 1024
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
+    # Exercise the same inclusive boundary with a small valid document.
+    monkeypatch.setattr(parser, "_MAX_DOCUMENT_BYTES", len(raw))
+    assert parser.parse_word_file(raw, "稿件.docx").title
+    with pytest.raises(ValueError, match="超过 60MB"):
+        parser.parse_word_file(raw + b"x", "稿件.docx")
