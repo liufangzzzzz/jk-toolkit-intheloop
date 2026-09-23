@@ -8,7 +8,16 @@ on:
 
 permissions:
   contents: read
-  packages: write
+
+# 镜像推送到阿里云容器镜像服务 ACR（个人版）
+# 登录账号 nick1901873567；密码需先在仓库 Settings → Secrets and variables → Actions
+# 中新增 Secret：ALIYUN_ACR_PASSWORD
+# （阿里云控制台 → 容器镜像服务 → 访问凭证 → 设置固定密码 / 使用账号密码）
+# 命名空间（ACR_NAMESPACE）与控制台「命名空间」保持一致，不一致时改下面这一行即可
+env:
+  ACR_REGISTRY: crpi-sf6d3yw2nfnffiwh.cn-beijing.personal.cr.aliyuncs.com
+  ACR_NAMESPACE: geekpart-test
+  ACR_USERNAME: nick1901873567
 
 jobs:
   build:
@@ -26,28 +35,17 @@ jobs:
 
       - uses: docker/setup-buildx-action@v3
 
-      - name: Login to ghcr.io
+      - name: Login to Aliyun ACR
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      # 金山云镜像仓库：需先在仓库 Settings → Secrets and variables → Actions 配置
-      # KCE_USERNAME / KCE_PASSWORD（金山云控制台「镜像仓库 → 访问凭证」处设置）
-      - name: Login to KCE (金山云)
-        uses: docker/login-action@v3
-        with:
-          registry: hub.kce.ksyun.com
-          username: ${{ secrets.KCE_USERNAME }}
-          password: ${{ secrets.KCE_PASSWORD }}
+          registry: ${{ env.ACR_REGISTRY }}
+          username: ${{ env.ACR_USERNAME }}
+          password: ${{ secrets.ALIYUN_ACR_PASSWORD }}
 
       - id: meta
         uses: docker/metadata-action@v5
         with:
-          images: |
-            ghcr.io/geekpark-hub/jk-toolkit-intheloop/${{ matrix.name }}
-            hub.kce.ksyun.com/geekpark-hub/${{ matrix.name }}
+          images: ${{ env.ACR_REGISTRY }}/${{ env.ACR_NAMESPACE }}/${{ matrix.name }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=sha,format=short
