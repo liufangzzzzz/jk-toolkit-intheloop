@@ -13,10 +13,11 @@ permissions:
 # 登录账号 nick1901873567；密码需先在仓库 Settings → Secrets and variables → Actions
 # 中新增 Secret：ALIYUN_ACR_PASSWORD
 # （阿里云控制台 → 容器镜像服务 → 访问凭证 → 设置固定密码 / 使用账号密码）
-# 命名空间（ACR_NAMESPACE）与控制台「命名空间」保持一致，不一致时改下面这一行即可
+# 镜像推送到 <ACR_NAMESPACE>/<frontend|backend>:<tag>
+# 例如 crpi-...aliyuncs.com/geekpark-test/frontend:latest
 env:
   ACR_REGISTRY: crpi-sf6d3yw2nfnffiwh.cn-beijing.personal.cr.aliyuncs.com
-  ACR_NAMESPACE: geekpart-test
+  ACR_NAMESPACE: geekpark-test
   ACR_USERNAME: nick1901873567
 
 jobs:
