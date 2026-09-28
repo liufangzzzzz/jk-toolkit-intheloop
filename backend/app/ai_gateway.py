@@ -5,10 +5,12 @@ import os
 # account may expose additional models; they remain unavailable until this
 # reviewed list is changed in code.
 ALLOWED_MODELS = (
-    {'id': 'deepseek/deepseek-v4-flash-vision-exp', 'name': 'DeepSeek V4 Flash Vision'},
-    {'id': 'anthropic/claude-4.8-opus', 'name': 'Claude 4.8 Opus'},
-    {'id': 'anthropic/claude-opus-5', 'name': 'Claude Opus 5'},
-    {'id': 'openai/gpt-5.6-terra', 'name': 'GPT-5.6 Terra'},
+    {'id': 'claude-4.6-opus', 'name': 'Claude Opus 4.6', 'tasks': ['processing', 'article'], 'recommended': True},
+    {'id': 'google/gemini-3.8-flash', 'name': 'Gemini 3.8 Flash', 'tasks': ['processing', 'article'], 'recommended': True},
+    {'id': 'deepseek/deepseek-v4-flash-vision-exp', 'name': 'DeepSeek V4 Flash Vision', 'tasks': ['processing', 'article']},
+    {'id': 'anthropic/claude-4.8-opus', 'name': 'Claude 4.8 Opus', 'tasks': ['article']},
+    {'id': 'anthropic/claude-opus-5', 'name': 'Claude Opus 5', 'tasks': ['article']},
+    {'id': 'openai/gpt-5.6-terra', 'name': 'GPT-5.6 Terra', 'tasks': ['processing', 'article']},
 )
 
 

@@ -368,10 +368,6 @@ export default function OperationsWorkbench() {
 
   async function publishWebsite(mode: 'draft' | 'publish') {
     if (!websiteParsed) return;
-    if (mode === 'publish') {
-      const confirmed = window.confirm(`确认直接发布《${websiteParsed.article.title}》到极客公园官网吗？发布后文章会立即进入线上状态。`);
-      if (!confirmed) return;
-    }
     setWebsiteBusy(mode === 'draft' ? 'draft' : 'publishing');
     setWebsiteNotice('');
     setWebsitePublishResult(null);
@@ -642,6 +638,12 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
     setEditingBody(false);
   }
 
+  function updateTitle(value: string) {
+    props.onUpdate({ title: value });
+    const heading = iframeRef.current?.contentDocument?.querySelector('article > h1');
+    if (heading) heading.textContent = value;
+  }
+
   function dropWords(event: DragEvent<HTMLDivElement>) {
     event.preventDefault();
     dragDepth.current = 0;
@@ -660,12 +662,12 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
               <span className="preview-label">官网预览</span>
             </div>
           </div>
+          <label className="preview-title-editor">标题<input value={parsed.article.title} onChange={(event) => updateTitle(event.target.value)} /></label>
           <iframe ref={iframeRef} className="document-preview" title="官网文章预览" srcDoc={parsed.preview_html} sandbox="allow-same-origin" referrerPolicy="no-referrer" />
         </section>
         <aside className="publish-sidebar">
           <section className="editor-panel">
             <div className="meta-title"><span className="success-pill">解析完成</span><small>{parsed.article.cover_asset ? '已选取头图' : '无头图'}</small></div>
-            <label>标题<input value={parsed.article.title} onChange={(event) => props.onUpdate({ title: event.target.value })} /></label>
             <label>摘要<textarea value={parsed.article.abstract} onChange={(event) => props.onUpdate({ abstract: event.target.value })} maxLength={500} /></label>
             <TagEditor tags={parsed.article.tags} onChange={(tags) => props.onUpdate({ tags })} />
             <label>栏目<select value={props.selectedColumn || ''} onChange={(event) => props.onColumn(Number(event.target.value))}><option value="">不指定栏目</option>{status?.columns.map((column) => <option value={column.id} key={column.id}>{column.title}</option>)}</select></label>
@@ -680,8 +682,8 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
-          {props.publishResult?.admin_edit_url && <a className="result-link" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">打开官网后台文章</a>}
-          {props.publishResult?.public_url && <a className="result-link" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看已发布文章</a>}
+          {props.publishResult?.public_url && <a className="result-link" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}
+          {props.publishResult?.admin_edit_url && <a className="result-link" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}
           {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载未上传的第 {issue.index} 张原图</a>)}
         </aside>
       </div>
@@ -724,7 +726,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
         <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
-      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">打开后台文章</a>}{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看公开文章</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张失败原图</a>)}</div>}
+      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张失败原图</a>)}</div>}
     </div>
   );
 }
