@@ -14,6 +14,7 @@
 | 微信公众号 | `WECHAT_APP_SECRET` | 从工作台写入公众号草稿箱时填写；AppID 已预填，仍可修改 |
 | 飞书应用 | `FEISHU_APP_ID`、`FEISHU_APP_SECRET` | 读取团队内私有妙记时填写 |
 | 飞书用户授权 | `FEISHU_USER_REFRESH_TOKEN` | 导出一份你自己能看到的飞书文档时填写 |
+| 飞书导出文件夹 | `FEISHU_EXPORT_FOLDER_NAME`、`FEISHU_EXPORT_FOLDER_TOKEN` | 默认按名称查找个人云盘根目录下的“沟通记录”；只有重名或不在根目录时才填写 token |
 
 `ITL_SESSION_SECRET` 和 `ITL_AGENT_API_KEY` 由部署人员生成随机值，你不需要自己想。公开的 In The Loop 官网不需要任何密码或 AI Key。
 
@@ -44,6 +45,8 @@ docker compose up -d --force-recreate
 ```
 
 当前 `compose.yaml` 已显式传入 `.env.example` 中的全部工作台变量，包括 Modelink、飞书应用、飞书用户授权、微信与极客公园官网凭据。自动测试会检查两份文件，后续若新增变量却漏改 Compose，测试会直接失败。
+
+音频整理导出飞书文档时使用用户身份，并默认查找个人云盘根目录下名为“沟通记录”的文件夹。若该文件夹不在根目录，或根目录存在多个同名文件夹，请打开目标文件夹并从其链接中复制 folder token，填入 `FEISHU_EXPORT_FOLDER_TOKEN`。服务端应用还需开通读取云盘目录和创建、编辑 Docx 的权限。
 
 独立官网服务器只需：
 

@@ -73,6 +73,8 @@ def test_models_explicit_and_no_key_exposure(client,monkeypatch):
     assert r.json()['configured']
     assert 'secret-never-show' not in r.text
     assert [item['id'] for item in r.json()['models']] == [
+        'claude-4.6-opus',
+        'google/gemini-3.8-flash',
         'deepseek/deepseek-v4-flash-vision-exp',
         'anthropic/claude-4.8-opus',
         'anthropic/claude-opus-5',
@@ -260,6 +262,8 @@ def test_modelink_uses_fixed_allowlist_without_remote_discovery(client,monkeypat
     assert r.json()['configured'] and r.json()['provider']=='Modelink'
     assert 'modelink-private-test-key' not in r.text
     assert [x['id'] for x in r.json()['models']]==[
+        'claude-4.6-opus',
+        'google/gemini-3.8-flash',
         'deepseek/deepseek-v4-flash-vision-exp',
         'anthropic/claude-4.8-opus',
         'anthropic/claude-opus-5',
@@ -299,6 +303,13 @@ def test_audio_studio_imports_text_without_ai_and_prompts_before_audio(client, m
     assert 'AI' in audio_file.json()['notice']
 
 
+def test_audio_studio_vtt_import_preserves_cue_times(client):
+    vtt = b'''WEBVTT\n\n00:00:01.200 --> 00:00:03.000\nHost: Welcome.\n\n00:01:04.000 --> 00:01:07.000\nGuest: Robot data.\n'''
+    result = client.post('/api/v1/audio-studio/import-file', files={'file': ('episode.vtt', vtt, 'text/vtt')})
+    assert result.status_code == 200, result.text
+    assert result.json()['transcript'] == '[00:00:01] Host: Welcome.\n[00:01:04] Guest: Robot data.'
+
+
 def test_audio_studio_skills_and_project_drafts_are_independent(client):
     assert client.get('/api/v1/audio-studio/status').json()['skills_configured'] is False
     skills = client.get('/api/v1/audio-studio/skills')
@@ -330,9 +341,11 @@ def test_audio_studio_process_requires_explicit_model_and_preserves_uncertainty(
     monkeypatch.setattr(audio_studio, 'connection', lambda: ('secret', 'https://models.example/v1', 'test'))
     original = httpx.AsyncClient
     calls = []
+    prompts = []
     def handler(request):
         body = json.loads(request.content)
         calls.append(body['model'])
+        prompts.append(body['messages'][1]['content'])
         if len(calls) == 1:
             payload = {'cleaned': '这家公司叫 [[?派森?]]。', 'uncertain': ['派森']}
         else:
@@ -346,6 +359,28 @@ def test_audio_studio_process_requires_explicit_model_and_preserves_uncertainty(
     assert result.json()['cleaned'] == '这家公司叫 [[?派森?]]。'
     assert result.json()['uncertain'] == ['派森']
     assert calls == ['chosen-model', 'chosen-model']
+    assert '原始逐字稿（用于恢复时间轴和细节）' in prompts[1]
+    assert '原稿' in prompts[1]
+    assert '中文可读版（事实底稿）' in prompts[1]
+
+
+def test_audio_studio_rejects_models_not_enabled_for_routine_text_processing(client, monkeypatch):
+    monkeypatch.setenv('MODELINK_API_KEY', 'test-key')
+    result = client.post('/api/v1/audio-studio/process', json={
+        'model': 'anthropic/claude-4.8-opus',
+        'transcript': '这是一段不需要昂贵模型处理的逐字稿。',
+    })
+    assert result.status_code == 422
+    assert '不用于文本解析、清洗和纠错' in result.text
+
+
+def test_audio_studio_new_recommended_models_support_processing_and_articles(client, monkeypatch):
+    monkeypatch.setenv('MODELINK_API_KEY', 'test-key')
+    models = client.get('/api/v1/atlas/models').json()['models']
+    for model_id in ('claude-4.6-opus', 'google/gemini-3.8-flash'):
+        model = next(item for item in models if item['id'] == model_id)
+        assert model['tasks'] == ['processing', 'article']
+        assert model['recommended'] is True
 
 
 def test_audio_studio_ai_correction_updates_cleaned_and_simple_only(client, monkeypatch):
@@ -368,7 +403,7 @@ def test_audio_studio_ai_correction_updates_cleaned_and_simple_only(client, monk
 
 
 def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
-    import httpx
+    import httpx, json
     from app.modules.atlas import audio_studio
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
@@ -377,15 +412,64 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
     calls = []
     def handler(request):
         calls.append(request.url.path)
+        if request.url.path.endswith('/drive/v1/files'):
+            assert request.url.params['folder_token'] == ''
+            return httpx.Response(200, json={'code': 0, 'data': {'files': [{'name': '沟通记录', 'type': 'folder', 'token': 'folder123'}]}})
         if request.url.path.endswith('/docx/v1/documents'):
             assert request.headers['Authorization'] == 'Bearer user-token'
+            assert json.loads(request.content)['folder_token'] == 'folder123'
             return httpx.Response(200, json={'data': {'document': {'document_id': 'doc123'}}})
         return httpx.Response(200, json={'code': 0})
     monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     result = client.post('/api/v1/audio-studio/export-feishu', json={'title': '采访', 'content': '原版\n内容'})
     assert result.status_code == 200, result.text
     assert result.json()['url'] == 'https://geek.feishu.cn/docx/doc123'
-    assert len(calls) == 2
+    assert result.json()['folder_name'] == '沟通记录'
+    assert len(calls) == 3
+
+
+def test_audio_studio_refreshes_user_identity_and_rotates_refresh_token(client, monkeypatch):
+    import httpx, json
+    from app.modules.atlas import audio_studio, store
+    monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
+    monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
+    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'stale-direct-token')
+    monkeypatch.setenv('FEISHU_USER_REFRESH_TOKEN', 'refresh-one')
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    original = httpx.AsyncClient
+    def handler(request):
+        if request.url.path.endswith('/authen/v2/oauth/token'):
+            assert request.method == 'POST'
+            assert b'refresh-one' in request.content
+            return httpx.Response(200, json={'code': 0, 'access_token': 'fresh-user-token', 'refresh_token': 'refresh-two'})
+        assert request.headers['Authorization'] == 'Bearer fresh-user-token'
+        if request.url.path.endswith('/drive/v1/files'):
+            return httpx.Response(200, json={'code': 0, 'data': {'files': [{'name': '沟通记录', 'type': 'folder', 'token': 'folder456'}]}})
+        if request.url.path.endswith('/docx/v1/documents'):
+            assert json.loads(request.content)['folder_token'] == 'folder456'
+            return httpx.Response(200, json={'code': 0, 'data': {'document': {'document_id': 'doc456'}}})
+        return httpx.Response(200, json={'code': 0})
+    monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    result = client.post('/api/v1/audio-studio/export-feishu', json={'title': '采访', 'content': '正文'})
+    assert result.status_code == 200, result.text
+    assert result.json()['document_id'] == 'doc456'
+    assert store.get_setting('feishu-user-refresh-token', '') == 'refresh-two'
+
+
+def test_audio_studio_feishu_export_surfaces_permission_error(client, monkeypatch):
+    import httpx
+    from app.modules.atlas import audio_studio
+    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    original = httpx.AsyncClient
+    def handler(request):
+        return httpx.Response(200, json={'code': 1770032, 'msg': 'forbidden: missing docx permission'})
+    monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    result = client.post('/api/v1/audio-studio/export-feishu', json={'title': '采访', 'content': '正文'})
+    assert result.status_code == 502
+    assert 'missing docx permission' in result.text
+    assert '1770032' in result.text
 
 
 def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
