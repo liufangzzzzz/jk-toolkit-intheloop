@@ -23,3 +23,12 @@ def test_no_generic_fallback_or_arbitrary_english_terms():
 def test_named_chinese_product_and_founder():
     tags = suggest_tags('星河智能推出“星舟”机器人', '', '<p>星河智能联合创始人兼CEO张三表示，我们正在测试。</p>')
     assert tags == ['星河智能', '张三', '机器人', '星舟']
+
+
+def test_industry_company_and_person_are_prioritized_over_product():
+    tags = suggest_tags(
+        '宇树科技发布人形机器人 G1',
+        '创始人王兴兴谈具身智能产业',
+        '<p>宇树科技创始人王兴兴表示，机器人产品 G1 将继续迭代。</p>',
+    )
+    assert tags[:3] == ['宇树科技', '王兴兴', '具身智能']

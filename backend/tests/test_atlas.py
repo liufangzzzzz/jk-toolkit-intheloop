@@ -391,6 +391,8 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
 def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
     import httpx
     from app.modules.atlas import audio_studio
+    monkeypatch.delenv('FEISHU_APP_ID', raising=False)
+    monkeypatch.delenv('FEISHU_APP_SECRET', raising=False)
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     original = httpx.AsyncClient
@@ -405,3 +407,45 @@ def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
     assert result.status_code == 200, result.text
     assert result.json()['title'] == '用户的妙记'
     assert '妙记逐字稿' in result.json()['transcript']
+
+
+def test_audio_studio_reads_feishu_minutes_with_app_identity(client, monkeypatch):
+    import httpx
+    from app.modules.atlas import audio_studio
+    monkeypatch.delenv('FEISHU_USER_ACCESS_TOKEN', raising=False)
+    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
+    monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    original = httpx.AsyncClient
+    calls = []
+    def handler(request):
+        calls.append(request.url.path)
+        if request.url.path.endswith('/auth/v3/tenant_access_token/internal'):
+            assert request.method == 'POST'
+            return httpx.Response(200, json={'code': 0, 'tenant_access_token': 'tenant-token'})
+        assert request.headers['Authorization'] == 'Bearer tenant-token'
+        if request.url.path.endswith('/minutes/obcn456/transcript'):
+            return httpx.Response(200, text='嘉宾 00:02\n这是应用读取的逐字稿。')
+        return httpx.Response(200, json={'code': 0, 'data': {'minute': {'title': '机器人可访问的妙记'}}})
+    monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn456'})
+    assert result.status_code == 200, result.text
+    assert result.json()['title'] == '机器人可访问的妙记'
+    assert '应用读取的逐字稿' in result.json()['transcript']
+    assert calls == [
+        '/open-apis/auth/v3/tenant_access_token/internal',
+        '/open-apis/minutes/v1/minutes/obcn456',
+        '/open-apis/minutes/v1/minutes/obcn456/transcript',
+    ]
+
+
+def test_audio_studio_feishu_error_does_not_request_browser_login(client, monkeypatch):
+    monkeypatch.delenv('FEISHU_APP_ID', raising=False)
+    monkeypatch.delenv('FEISHU_APP_SECRET', raising=False)
+    monkeypatch.delenv('FEISHU_USER_ACCESS_TOKEN', raising=False)
+    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn789'})
+    assert result.status_code == 503
+    assert '飞书应用尚未配置' in result.text
+    assert '浏览器' not in result.text

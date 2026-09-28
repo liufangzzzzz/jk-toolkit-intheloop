@@ -36,6 +36,15 @@ MODELINK_API_KEY=你之后提供的ModelinkKey
 
 AI Key 尚未填写时，网站和工作台仍能打开；涉及模型的按钮会明确显示“未配置”。你填好 Key 并重启服务后，四个工作流共用同一个 Modelink 接口，界面会要求每次操作明确选择模型。
 
+修改服务器 `.env` 或更新 `compose.yaml` 后，需要重新创建容器，普通的 `restart` 不会重新读取环境变量：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+当前 `compose.yaml` 已显式传入 `.env.example` 中的全部工作台变量，包括 Modelink、飞书应用、飞书用户授权、微信与极客公园官网凭据。自动测试会检查两份文件，后续若新增变量却漏改 Compose，测试会直接失败。
+
 独立官网服务器只需：
 
 ```dotenv

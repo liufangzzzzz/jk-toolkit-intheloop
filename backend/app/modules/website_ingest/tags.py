@@ -1,8 +1,8 @@
-"""Conservative, local tag suggestions. Missing entities are left for the editor.
+"""Conservative, local tag suggestions ordered for editorial review.
 
-Only explicit company/action, company/founder and named-product contexts are
-used. Bylines, interview speaker labels and arbitrary capitalized words are
-not entities. This is a rule-based suggestion tool, not a general NER model.
+Industry, company and person tags come first. Only explicit company/action,
+company suffix, named-role and named-product contexts are used. Bylines,
+interview speaker labels and arbitrary capitalized words are not entities.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ _BAD_COMPANY = re.compile(
     r"表示|认为|报道|来自|推出|发布|关于|随着|通过|模型|产品|行业|文章|测试|研发|正在|已经|同时|目前|近期|今天|昨天|今年|去年|未来|近日|今日|随后|这|此|该|其|的|了|我)"
 )
 _GENERIC = {"人工智能", "具身智能", "全身智能", "人形机器人", "机器人", "科技公司", "公司", "团队", "研究团队", "AI", "CEO"}
+_COMPANY_SUFFIX = r"(?:科技|智能|机器人|动力|创新|集团|实验室|研究院)"
 
 
 def suggest_tags(title: str, abstract: str, content_html: str) -> list[str]:
@@ -34,7 +35,7 @@ def suggest_tags(title: str, abstract: str, content_html: str) -> list[str]:
              if not re.match(r"^\s*(?:作者|记者|编辑|文|撰文|采访|校对)\s*[：:丨|/／]", line)]
     source = "\n".join(lines)
     companies: list[str] = []
-    founders: list[str] = []
+    people: list[str] = []
     products: list[str] = []
 
     def add(target: list[str], value: str, limit: int = 2) -> None:
@@ -58,14 +59,31 @@ def suggest_tags(title: str, abstract: str, content_html: str) -> list[str]:
         for match in re.finditer(pattern, normalized):
             company(match.group(1))
 
+    # Company-like names in the headline or abstract are useful even when the
+    # sentence does not use a release verb. Keep this constrained to common
+    # organization suffixes to avoid turning arbitrary prose into tags.
+    headline = "\n".join([title, abstract])
+    for match in re.finditer(rf"(?<![\u4e00-\u9fff])([\u4e00-\u9fff]{{2,12}}{_COMPANY_SUFFIX})(?![\u4e00-\u9fff])", headline):
+        company(match.group(1))
+
     # Founder names require a company context, rather than just "张三：" or a byline.
     person = r"([\u4e00-\u9fff]{2,4}?|[A-Z][a-z]+(?: [A-Z][a-z]+){1,2})"
+    person_end = r"(?=表示|认为|说|谈|接受|出席|发布|介绍|指出|[\s，。；：:（(]|$)"
     for name in companies:
         prefix = re.escape(name) + rf"\s*(?:的)?{_ROLE}(?:\s*(?:兼|暨|、|&|及)\s*(?:CEO|首席执行官))?\s*[：:]?\s*"
-        for match in re.finditer(prefix + person + r"(?=表示|认为|说|谈|接受|出席|发布|介绍|指出|[\s，。；：:（(]|$)", source):
+        for match in re.finditer(prefix + person + person_end, source):
             value = match.group(1)
             if value not in {"表示", "认为", "我们", "唯一"}:
-                add(founders, value)
+                add(people, value)
+
+    # A role is strong enough evidence for a person tag even when the company
+    # name was written elsewhere in the article.
+    for match in re.finditer(_ROLE + r"(?:\s*(?:兼|暨|、|&|及)\s*(?:CEO|首席执行官))?\s*[：:]?\s*" + person + person_end, source):
+        value = match.group(1)
+        if value not in {"表示", "认为", "我们", "唯一"}:
+            add(people, value)
+    for match in re.finditer(person + r"\s*[，,]\s*[^\n。！？]{0,30}?" + _ROLE, source):
+        add(people, match.group(1))
 
     # Only named model/product contexts, not every English term in an article.
     latin_product = r"([A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*(?: [A-Z0-9][A-Za-z0-9.-]*){0,2})"
@@ -79,7 +97,10 @@ def suggest_tags(title: str, abstract: str, content_html: str) -> list[str]:
             add(products, value)
 
     haystack = source.lower()
-    industry = next((label for label, words in _INDUSTRIES if any(word in haystack for word in words)), None)
-    # A small set: up to two companies, two explicitly named founders, one
-    # specific industry, and two products. Preserve room for manual tags.
-    return list(dict.fromkeys([*companies, *founders, *([industry] if industry else []), *products]))[:7]
+    industries = [label for label, words in _INDUSTRIES if any(word in haystack for word in words)]
+    # Keep the most specific industry match. The ordered taxonomy places broad
+    # fallbacks such as “机器人” and “人工智能” after specific sectors.
+    industry = industries[0] if industries else None
+    # Stable review order keeps the named entities together: companies,
+    # people and industry all precede products or broad editorial topics.
+    return list(dict.fromkeys([*companies, *people, *([industry] if industry else []), *products]))[:7]

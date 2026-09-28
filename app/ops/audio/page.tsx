@@ -14,6 +14,12 @@ type Project = {
   transcript: string; cleaned: string; simple: string; article_title: string;
   article_summary: string; article_body: string; updated_at?: string;
 };
+type AudioWorkspaceState = {
+  sourceMode: SourceMode; sourceUrl: string; pastedText: string; project: Project;
+  model: string; visibleTiers: Tier[]; correction: string; correctionModel: string;
+};
+
+const audioWorkspaceKey = 'itl-audio-workspace-v1';
 
 const blankProject = (): Project => ({
   revision: 0, title: '', source_url: '', source_kind: 'text', transcript: '', cleaned: '',
@@ -49,6 +55,7 @@ export default function AudioStudio() {
   const [visibleTiers, setVisibleTiers] = useState<Tier[]>(['transcript', 'cleaned']);
   const [correction, setCorrection] = useState('');
   const [correctionModel, setCorrectionModel] = useState('');
+  const [workspaceRestored, setWorkspaceRestored] = useState(false);
   const tierAreas = useRef<Partial<Record<Tier, HTMLTextAreaElement | null>>>({});
   const syncingScroll = useRef(false);
   const [busy, setBusy] = useState('');
@@ -85,6 +92,44 @@ export default function AudioStudio() {
     void initialize();
     return () => { cancelled = true; };
   }, [load]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => {
+      try {
+        const raw = window.sessionStorage.getItem(audioWorkspaceKey);
+        if (raw) {
+          const saved = JSON.parse(raw) as Partial<AudioWorkspaceState>;
+          if (saved.sourceMode && ['link', 'text', 'file'].includes(saved.sourceMode)) setSourceMode(saved.sourceMode);
+          if (typeof saved.sourceUrl === 'string') setSourceUrl(saved.sourceUrl);
+          if (typeof saved.pastedText === 'string') setPastedText(saved.pastedText);
+          if (saved.project && typeof saved.project === 'object') setProject({ ...blankProject(), ...saved.project });
+          if (typeof saved.model === 'string') setModel(saved.model);
+          if (Array.isArray(saved.visibleTiers)) {
+            const tiers = saved.visibleTiers.filter((tier): tier is Tier => ['transcript', 'cleaned', 'simple'].includes(tier));
+            if (tiers.length) setVisibleTiers(tiers.slice(0, 2));
+          }
+          if (typeof saved.correction === 'string') setCorrection(saved.correction);
+          if (typeof saved.correctionModel === 'string') setCorrectionModel(saved.correctionModel);
+        }
+      } catch {
+        window.sessionStorage.removeItem(audioWorkspaceKey);
+      } finally {
+        setWorkspaceRestored(true);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
+
+  useEffect(() => {
+    if (!workspaceRestored) return;
+    try {
+      window.sessionStorage.setItem(audioWorkspaceKey, JSON.stringify({
+        sourceMode, sourceUrl, pastedText, project, model, visibleTiers, correction, correctionModel,
+      } satisfies AudioWorkspaceState));
+    } catch {
+      // Keep the editor usable when a very large transcript exceeds browser storage.
+    }
+  }, [workspaceRestored, sourceMode, sourceUrl, pastedText, project, model, visibleTiers, correction, correctionModel]);
 
   function update(patch: Partial<Project>) { setProject((current) => ({ ...current, ...patch })); }
   async function run(name: string, task: () => Promise<void>) {
@@ -239,7 +284,7 @@ export default function AudioStudio() {
       <header className="workspace-title"><div><p className="eyebrow">IN THE LOOP / AUDIO DESK</p><h1>音频整理</h1></div><p>优先读取现成 transcript。只有确实需要识别或生成时，才使用你明确选择的模型。</p></header>
       <div className="connection-cards" aria-label="必要配置">
         <div className={models.length ? 'ready' : 'pending'}><span>AI</span><strong>{models.length ? 'AI API 已配置' : 'AI API 未配置'}</strong><small>{models.length ? `${models.length} 个指定模型可选，每次由你决定` : '请在服务器 env 配置 Modelink API Key'}</small></div>
-        <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '飞书用户身份已授权' : sourceStatus.feishu_app_configured ? '飞书用户身份未授权' : '飞书应用未配置'}</strong><small>用于读取你的私有妙记，并在你的空间创建文档</small></div>
+        <div className={sourceStatus.feishu_app_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_app_configured ? sourceStatus.feishu_user_configured ? '飞书应用与用户身份已连接' : '飞书应用已连接' : '飞书应用未配置'}</strong><small>{sourceStatus.feishu_app_configured ? sourceStatus.feishu_user_configured ? '可读取机器人有权限的妙记，并在你的空间创建文档' : '可读取机器人有权限的妙记；导出到你的空间还需用户授权' : '请在服务器 env 配置飞书应用'}</small></div>
         <div className={sourceStatus.skills_configured ? 'ready' : 'initial'}><span>SK</span><strong>{sourceStatus.skills_configured ? '生成规则已配置' : '正在使用初始规则'}</strong><small>清洗、简版与稿件规则可以随时修改</small><button onClick={() => setRulesOpen(true)}>{sourceStatus.skills_configured ? '修改' : '配置'} →</button></div>
       </div>
       {(notice || error || modelNotice) && <div className={`operation-notice audio-page-notice ${error ? 'error' : 'success'}`} role="status">{error || notice || modelNotice}</div>}

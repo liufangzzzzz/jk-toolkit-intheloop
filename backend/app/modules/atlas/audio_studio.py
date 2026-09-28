@@ -101,6 +101,33 @@ def _feishu_user_configured() -> bool:
     )
 
 
+def _feishu_app_configured() -> bool:
+    return bool(
+        os.environ.get('FEISHU_APP_ID', '').strip()
+        and os.environ.get('FEISHU_APP_SECRET', '').strip()
+    )
+
+
+async def _feishu_tenant_token(client: httpx.AsyncClient) -> str:
+    app_id = os.environ.get('FEISHU_APP_ID', '').strip()
+    app_secret = os.environ.get('FEISHU_APP_SECRET', '').strip()
+    if not app_id or not app_secret:
+        raise HTTPException(503, '尚未配置飞书应用。请在服务器 env 中填写 App ID 和 App Secret。')
+    api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
+    response = await client.post(api_base + '/auth/v3/tenant_access_token/internal', json={
+        'app_id': app_id,
+        'app_secret': app_secret,
+    })
+    response.raise_for_status()
+    payload = response.json()
+    if payload.get('code') not in (None, 0):
+        raise ValueError(str(payload.get('msg') or '飞书应用身份验证失败'))
+    token = str(payload.get('tenant_access_token') or '')
+    if not token:
+        raise ValueError('飞书没有返回 tenant access token')
+    return token
+
+
 async def _feishu_user_token(client: httpx.AsyncClient) -> str:
     direct = os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
     if direct:
@@ -137,24 +164,54 @@ async def _feishu_minute_transcript(url: str) -> dict:
     api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
     minute_token = match.group(1)
     async with httpx.AsyncClient(timeout=60) as client:
-        token = await _feishu_user_token(client)
-        headers = {'Authorization': 'Bearer ' + token}
-        info_response = await client.get(api_base + f'/minutes/v1/minutes/{minute_token}', headers=headers)
-        info_response.raise_for_status()
-        info = info_response.json()
-        if info.get('code') not in (None, 0):
-            raise ValueError(str(info.get('msg') or '妙记信息读取失败'))
-        minute = ((info.get('data') or {}).get('minute') or {})
-        transcript_response = await client.get(
-            api_base + f'/minutes/v1/minutes/{minute_token}/transcript',
-            headers=headers,
-            params={'need_speaker': 'true', 'need_timestamp': 'true', 'file_format': 'txt'},
+        identities: list[tuple[str, str]] = []
+        errors: list[str] = []
+        if _feishu_app_configured():
+            try:
+                identities.append(('飞书应用', await _feishu_tenant_token(client)))
+            except Exception as exc:
+                errors.append(f'飞书应用：{exc}')
+        if _feishu_user_configured():
+            try:
+                identities.append(('飞书用户', await _feishu_user_token(client)))
+            except Exception as exc:
+                errors.append(f'飞书用户：{exc}')
+        if not identities and not (_feishu_app_configured() or _feishu_user_configured()):
+            raise HTTPException(503, '飞书应用尚未配置。请先在服务器 env 中填写 FEISHU_APP_ID 和 FEISHU_APP_SECRET。')
+
+        for identity, token in identities:
+            try:
+                headers = {'Authorization': 'Bearer ' + token}
+                info_response = await client.get(api_base + f'/minutes/v1/minutes/{minute_token}', headers=headers)
+                info_response.raise_for_status()
+                info = info_response.json()
+                if info.get('code') not in (None, 0):
+                    raise ValueError(str(info.get('msg') or '妙记信息读取失败'))
+                minute = ((info.get('data') or {}).get('minute') or {})
+                transcript_response = await client.get(
+                    api_base + f'/minutes/v1/minutes/{minute_token}/transcript',
+                    headers=headers,
+                    params={'need_speaker': 'true', 'need_timestamp': 'true', 'file_format': 'txt'},
+                )
+                transcript_response.raise_for_status()
+                transcript = transcript_response.text.strip()
+                if 'json' in transcript_response.headers.get('content-type', '').lower():
+                    transcript_payload = transcript_response.json()
+                    if transcript_payload.get('code') not in (None, 0):
+                        raise ValueError(str(transcript_payload.get('msg') or '妙记逐字稿读取失败'))
+                    data = transcript_payload.get('data') or {}
+                    transcript = str(data.get('transcript') or data.get('content') or '').strip()
+                if not transcript:
+                    raise ValueError('妙记没有返回逐字稿')
+                return {'title': str(minute.get('title') or ''), 'transcript': transcript, 'source_kind': 'feishu', 'needs_ai': False}
+            except Exception as exc:
+                errors.append(f'{identity}：{exc}')
+        detail = '；'.join(errors)[:360]
+        raise HTTPException(
+            422,
+            '飞书应用无法读取这份妙记。请确认机器人已获准访问该妙记，并已开通妙记信息读取与逐字稿导出权限。'
+            + (f'（{detail}）' if detail else ''),
         )
-        transcript_response.raise_for_status()
-        transcript = transcript_response.text.strip()
-        if not transcript:
-            raise ValueError('妙记没有返回逐字稿')
-    return {'title': str(minute.get('title') or ''), 'transcript': transcript, 'source_kind': 'feishu', 'needs_ai': False}
 
 
 def _run(args: list[str], timeout=180) -> str:
@@ -277,7 +334,7 @@ def skills(): return {name: _skill(name) for name in DEFAULT_SKILLS}
 @router.get('/status')
 def source_status():
     return {
-        'feishu_app_configured': bool(os.environ.get('FEISHU_APP_ID', '').strip() and os.environ.get('FEISHU_APP_SECRET', '').strip()),
+        'feishu_app_configured': _feishu_app_configured(),
         'feishu_user_configured': _feishu_user_configured(),
         'skills_configured': all(bool(store.get_setting('audio-skill-' + name, '').strip()) for name in DEFAULT_SKILLS),
         'youtube_ready': bool(_executable('yt-dlp', 'YTDLP_BIN')),
@@ -314,7 +371,7 @@ async def import_link(body: UrlInput):
     url = body.url.strip()
     is_feishu = any(x in url.lower() for x in ('feishu.cn', 'larksuite.com'))
     try:
-        if is_feishu and _FEISHU_MINUTE.search(url) and _feishu_user_configured():
+        if is_feishu and _FEISHU_MINUTE.search(url):
             return await _feishu_minute_transcript(url)
         if _XYZ.search(url): return _xyz_transcript(url)
         if any(host in url.lower() for host in ('bilibili.com', 'b23.tv')):
@@ -329,7 +386,7 @@ async def import_link(body: UrlInput):
     except HTTPException: raise
     except Exception as exc:
         if is_feishu:
-            raise HTTPException(422, '这个妙记链接需要飞书登录。它在你已登录的浏览器里能打开，但服务器没有你的浏览器登录状态。请将分享权限设为无需登录也可查看，或导出文字后粘贴/上传。') from exc
+            raise HTTPException(422, '飞书应用没有读取到这份内容。请确认机器人有访问权限，或导出文字后粘贴/上传。') from exc
         raise HTTPException(422, str(exc)[:500]) from exc
 
 
