@@ -287,7 +287,7 @@ async def parse_feishu_document(
     *,
     filename_hint: Optional[str] = None,
 ) -> InTheLoopArticle:
-    """Fetch a Feishu document through the configured public/API path."""
+    """Fetch a Feishu document through its public share page."""
     from .feishu_fetcher import fetch_intheloop_feishu_raw_blocks
 
     parsed, _fname = await fetch_intheloop_feishu_raw_blocks(

@@ -27,7 +27,6 @@ from ..feishu.image_normalize import (
     normalize_feishu_image_for_wechat,
     parse_feishu_data_url_any_image,
 )
-from ..feishu.image_resolver import fetch_feishu_image_bytes_from_token
 from ..feishu.public_image_store import fetch_public_image, is_public_image_ref
 
 logger = logging.getLogger(__name__)
@@ -98,19 +97,14 @@ class WeChatDraftService:
             remote = fetch_image_bytes_from_url(src)
             if remote:
                 data, fname = remote
-            elif is_feishu or (src or "").strip().startswith("feishu-image://"):
-                token_image = fetch_feishu_image_bytes_from_token(src)
-                if token_image:
-                    data, fname = token_image
-                    mime_hint = ""
-                else:
-                    fallback = parse_feishu_data_url_any_image(src)
-                    if not fallback:
-                        return None
-                    data, fname, mime_hint = fallback
+            elif is_feishu:
+                fallback = parse_feishu_data_url_any_image(src)
+                if not fallback:
+                    return None
+                data, fname, mime_hint = fallback
             else:
                 return None
-        if is_feishu or (src or "").strip().startswith("feishu-image://"):
+        if is_feishu:
             data, fname, mime_hint = normalize_feishu_image_for_wechat(
                 data, fname, mime_hint=mime_hint
             )

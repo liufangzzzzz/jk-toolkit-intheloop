@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import mimetypes
 import os
 
 import httpx
@@ -10,7 +9,6 @@ from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
-from agents.intheloop.feishu.image_resolver import fetch_feishu_image_bytes_from_token
 from agents.intheloop.feishu.public_image_store import fetch_public_image
 from agents.intheloop.renderer import template_image_url
 
@@ -28,7 +26,7 @@ from .modules.website_ingest.routes import agent_router as website_agent_router
 from .modules.website_ingest.routes import router as website_ingest_router
 
 from .modules.atlas.routes import router as atlas_router, public_router as atlas_public_router
-from .modules.atlas.audio_studio import router as audio_studio_router
+from .modules.audio_studio.routes import router as audio_studio_router
 
 load_dotenv()
 
@@ -102,17 +100,6 @@ async def auth_login(body: LoginRequest, response: Response) -> dict:
 async def auth_logout(response: Response) -> dict:
     clear_session_cookie(response, "intheloop")
     return {"authenticated": False, "auth_enabled": auth_enabled("intheloop")}
-
-
-@app.get("/api/v1/intheloop/feishu-image")
-async def feishu_image(request: Request, token: str = Query(min_length=1)) -> Response:
-    if not is_authenticated(request, "intheloop"):
-        raise HTTPException(status_code=401, detail={"message": "请先登录内容发布台"})
-    result = await asyncio.to_thread(fetch_feishu_image_bytes_from_token, f"feishu-image://{token.strip()}")
-    if not result:
-        raise HTTPException(status_code=404, detail={"message": "飞书图片无法加载"})
-    raw, filename = result
-    return Response(content=raw, media_type=mimetypes.guess_type(filename)[0] or "image/jpeg")
 
 
 @app.get("/api/v1/intheloop/public-image")

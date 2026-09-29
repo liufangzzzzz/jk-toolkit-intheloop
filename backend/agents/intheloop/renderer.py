@@ -338,9 +338,6 @@ def _article_opening_html(article: InTheLoopArticle) -> str:
 
 
 def _preview_src(raw_url: str) -> str:
-    if raw_url.startswith("feishu-image://"):
-        bare = raw_url[len("feishu-image://") :]
-        return f"/api/v1/intheloop/feishu-image?token={quote(bare)}"
     if raw_url.startswith("public-image://"):
         bare = raw_url[len("public-image://") :]
         return f"/api/v1/intheloop/public-image?token={quote(bare)}"
