@@ -283,7 +283,7 @@ def test_model_list_is_empty_until_server_key_is_configured(client,monkeypatch):
 
 
 def test_audio_studio_imports_text_without_ai_and_prompts_before_audio(client, monkeypatch):
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     async def fail_if_called():
         raise AssertionError('model discovery must not run before explicit audio consent')
     monkeypatch.setattr(audio_studio, 'model_options', fail_if_called)
@@ -335,7 +335,7 @@ def test_audio_studio_skills_and_project_drafts_are_independent(client):
 
 def test_audio_studio_process_requires_explicit_model_and_preserves_uncertainty(client, monkeypatch):
     import httpx, json
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     async def options(): return [{'id': 'chosen-model', 'name': 'Chosen'}]
     monkeypatch.setattr(audio_studio, 'model_options', options)
     monkeypatch.setattr(audio_studio, 'connection', lambda: ('secret', 'https://models.example/v1', 'test'))
@@ -385,7 +385,7 @@ def test_audio_studio_new_recommended_models_support_processing_and_articles(cli
 
 def test_audio_studio_ai_correction_updates_cleaned_and_simple_only(client, monkeypatch):
     import httpx, json
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     async def options(): return [{'id': 'cheap-model', 'name': 'Cheap'}]
     monkeypatch.setattr(audio_studio, 'model_options', options)
     monkeypatch.setattr(audio_studio, 'connection', lambda: ('secret', 'https://models.example/v1', 'test'))
@@ -404,7 +404,7 @@ def test_audio_studio_ai_correction_updates_cleaned_and_simple_only(client, monk
 
 def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
     import httpx, json
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     monkeypatch.setenv('FEISHU_DOC_ORIGIN', 'https://geek.feishu.cn/docx')
@@ -430,7 +430,7 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
 
 def test_audio_studio_refreshes_user_identity_and_rotates_refresh_token(client, monkeypatch):
     import httpx, json
-    from app.modules.atlas import audio_studio, store
+    from app.modules.audio_studio import routes as audio_studio, store
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
     monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'stale-direct-token')
@@ -458,13 +458,13 @@ def test_audio_studio_refreshes_user_identity_and_rotates_refresh_token(client, 
 
 def test_audio_studio_feishu_export_surfaces_permission_error(client, monkeypatch):
     import httpx
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     original = httpx.AsyncClient
     def handler(request):
-        return httpx.Response(200, json={'code': 1770032, 'msg': 'forbidden: missing docx permission'})
+        return httpx.Response(403, json={'code': 1770032, 'msg': 'forbidden: missing docx permission'})
     monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     result = client.post('/api/v1/audio-studio/export-feishu', json={'title': '采访', 'content': '正文'})
     assert result.status_code == 502
@@ -474,11 +474,13 @@ def test_audio_studio_feishu_export_surfaces_permission_error(client, monkeypatc
 
 def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
     import httpx
-    from app.modules.atlas import audio_studio
+    from app.modules.audio_studio import routes as audio_studio
     monkeypatch.delenv('FEISHU_APP_ID', raising=False)
     monkeypatch.delenv('FEISHU_APP_SECRET', raising=False)
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    async def no_public(_url): raise ValueError('not public')
+    monkeypatch.setattr(audio_studio, '_public_feishu_minute', no_public)
     original = httpx.AsyncClient
     def handler(request):
         assert request.headers['Authorization'] == 'Bearer user-token'
@@ -493,43 +495,102 @@ def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
     assert '妙记逐字稿' in result.json()['transcript']
 
 
-def test_audio_studio_reads_feishu_minutes_with_app_identity(client, monkeypatch):
-    import httpx
-    from app.modules.atlas import audio_studio
+def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, monkeypatch):
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
+    monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
+    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    async def public_minute(_url):
+        return {
+            'title': '互联网公开妙记',
+            'transcript': '张三 00:01\n这是公开页原版逐字稿。',
+            'source_kind': 'feishu',
+            'needs_ai': False,
+        }
+    async def identity_must_not_run(_url):
+        raise AssertionError('公开读取成功后不应再调用任何飞书身份')
+    monkeypatch.setattr(audio_studio, '_public_feishu_minute', public_minute)
+    monkeypatch.setattr(audio_studio, '_feishu_minute_transcript', identity_must_not_run)
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn-public'})
+    assert result.status_code == 200, result.text
+    assert result.json()['title'] == '互联网公开妙记'
+    assert '00:01' in result.json()['transcript']
+
+
+def test_audio_studio_does_not_read_feishu_minutes_with_bot_identity(client, monkeypatch):
+    from app.modules.audio_studio import routes as audio_studio
     monkeypatch.delenv('FEISHU_USER_ACCESS_TOKEN', raising=False)
     monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
     monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    async def no_public(_url): raise ValueError('not public')
+    monkeypatch.setattr(audio_studio, '_public_feishu_minute', no_public)
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn456'})
+    assert result.status_code == 503
+    assert '不会使用机器人身份' in result.text
+
+
+def test_audio_studio_prefers_user_identity_for_private_feishu_minutes(client, monkeypatch):
+    import httpx
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
+    monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
+    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    async def no_public(_url): raise ValueError('not public')
+    monkeypatch.setattr(audio_studio, '_public_feishu_minute', no_public)
     original = httpx.AsyncClient
     calls = []
     def handler(request):
         calls.append(request.url.path)
-        if request.url.path.endswith('/auth/v3/tenant_access_token/internal'):
-            assert request.method == 'POST'
-            return httpx.Response(200, json={'code': 0, 'tenant_access_token': 'tenant-token'})
-        assert request.headers['Authorization'] == 'Bearer tenant-token'
-        if request.url.path.endswith('/minutes/obcn456/transcript'):
-            return httpx.Response(200, text='嘉宾 00:02\n这是应用读取的逐字稿。')
-        return httpx.Response(200, json={'code': 0, 'data': {'minute': {'title': '机器人可访问的妙记'}}})
+        assert request.headers['Authorization'] == 'Bearer user-token'
+        if request.url.path.endswith('/transcript'):
+            return httpx.Response(200, text='发言人 00:01\n用户身份读取成功。')
+        return httpx.Response(200, json={'code': 0, 'data': {'minute': {'title': '私有妙记'}}})
     monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
-    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn456'})
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn-user'})
     assert result.status_code == 200, result.text
-    assert result.json()['title'] == '机器人可访问的妙记'
-    assert '应用读取的逐字稿' in result.json()['transcript']
-    assert calls == [
-        '/open-apis/auth/v3/tenant_access_token/internal',
-        '/open-apis/minutes/v1/minutes/obcn456',
-        '/open-apis/minutes/v1/minutes/obcn456/transcript',
+    assert result.json()['title'] == '私有妙记'
+    assert calls[-2:] == [
+        '/open-apis/minutes/v1/minutes/obcn-user',
+        '/open-apis/minutes/v1/minutes/obcn-user/transcript',
     ]
+    assert all('tenant_access_token' not in path for path in calls)
+
+
+def test_audio_studio_preserves_feishu_permission_error(client, monkeypatch):
+    import httpx
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    monkeypatch.delenv('FEISHU_APP_ID', raising=False)
+    monkeypatch.delenv('FEISHU_APP_SECRET', raising=False)
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    original = httpx.AsyncClient
+    def handler(request):
+        assert request.headers['Authorization'] == 'Bearer user-token'
+        if request.url.path.endswith('/transcript'):
+            return httpx.Response(403, json={'code': 2091003, 'msg': 'no permission to export transcript'})
+        return httpx.Response(200, json={'code': 0, 'data': {'minute': {'title': '无权限妙记'}}})
+    monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn-denied'})
+    assert result.status_code == 422
+    assert '飞书用户身份无法读取' in result.text
+    assert 'no permission to export transcript' in result.text
+    assert '2091003' in result.text
 
 
 def test_audio_studio_feishu_error_does_not_request_browser_login(client, monkeypatch):
+    from app.modules.audio_studio import routes as audio_studio
     monkeypatch.delenv('FEISHU_APP_ID', raising=False)
     monkeypatch.delenv('FEISHU_APP_SECRET', raising=False)
     monkeypatch.delenv('FEISHU_USER_ACCESS_TOKEN', raising=False)
     monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
+    async def no_public(_url): raise ValueError('not public')
+    monkeypatch.setattr(audio_studio, '_public_feishu_minute', no_public)
     result = client.post('/api/v1/audio-studio/import-url', json={'url': 'https://geek.feishu.cn/minutes/obcn789'})
     assert result.status_code == 503
-    assert '飞书应用尚未配置' in result.text
+    assert '服务器也没有飞书用户授权' in result.text
     assert '浏览器' not in result.text

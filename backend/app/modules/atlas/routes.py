@@ -4,15 +4,14 @@ import sqlite3
 import uuid
 from pathlib import Path
 import httpx
-from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from pydantic import BaseModel, Field
 from ...auth import require_auth
 from ...database import database
+from ...document_text import parse_word_text
 from . import store
 from app.ai_gateway import connection, model_options
 from .models import Company, Tag, Content, Product, Publication, Generate, Locale, ImportURL
-from ..website_ingest.parser import parse_word_file
 
 router = APIRouter(prefix='/api/v1/atlas', dependencies=[Depends(require_auth)])
 public_router = APIRouter(prefix='/api/v1/public/atlas')
@@ -72,9 +71,8 @@ async def import_file(file: UploadFile = File(...)):
             body = raw.decode('utf-8-sig').strip()
             if not body: raise ValueError('empty')
             return {'title': body.splitlines()[0].lstrip('# ').strip()[:250], 'summary': '', 'body': body, 'notice': '已导入文字，请核对后保存草稿。'}
-        parsed = parse_word_file(raw, file.filename or 'document.docx')
-        return {'title': parsed.title, 'summary': parsed.abstract,
-                'body': BeautifulSoup(parsed.content_html, 'html.parser').get_text('\n',strip=True),
+        title, body = parse_word_text(raw, file.filename or 'document.docx')
+        return {'title': title, 'summary': '', 'body': body,
                 'notice': '已导入文字。图片暂不进入新站，请在发布前核对正文。'}
     except Exception:
         raise HTTPException(422, '文档解析失败，请改用 DOCX 或直接粘贴正文；原稿不会被覆盖')

@@ -42,11 +42,6 @@ CREATE TABLE IF NOT EXISTS atlas_ai_runs (
  status TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS atlas_settings (
  key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS atlas_audio_projects (
- id TEXT PRIMARY KEY, data TEXT NOT NULL,
- revision INTEGER NOT NULL DEFAULT 1, updated_at TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS idx_atlas_audio_projects_updated
- ON atlas_audio_projects(updated_at DESC);
 '''
 
 
@@ -106,30 +101,6 @@ def set_setting(key, value):
     initialize()
     with database() as db:
         db.execute('INSERT INTO atlas_settings VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at', (key, value, now()))
-
-
-def audio_projects():
-    initialize()
-    with database() as db:
-        return [json.loads(row['data']) | {'id': row['id'], 'revision': row['revision'], 'updated_at': row['updated_at']}
-                for row in db.execute('SELECT * FROM atlas_audio_projects ORDER BY updated_at DESC')]
-
-
-def save_audio_project(data, record_id=None):
-    initialize()
-    record_id = record_id or str(uuid.uuid4())
-    with database() as db:
-        row = db.execute('SELECT revision FROM atlas_audio_projects WHERE id=?', (record_id,)).fetchone()
-        expected = int(data.pop('revision', 0) or 0)
-        if row and row['revision'] != expected:
-            raise ValueError('工作稿已被更新，请重新打开后再保存')
-        revision = row['revision'] + 1 if row else 1
-        stamp = now()
-        db.execute(
-            'INSERT INTO atlas_audio_projects VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE SET data=excluded.data,revision=excluded.revision,updated_at=excluded.updated_at',
-            (record_id, json.dumps(data, ensure_ascii=False), revision, stamp),
-        )
-    return {'id': record_id, 'revision': revision, 'updated_at': stamp}
 
 
 def save(kind, data, record_id=None):
