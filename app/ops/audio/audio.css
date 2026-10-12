@@ -7,6 +7,7 @@
 .audio-studio .audio-source-panel{align-self:start}
 .audio-studio .segmented-control.three{grid-template-columns:repeat(3,1fr)}
 .audio-studio .source-box{display:grid;gap:12px}
+.audio-studio .stop-button{min-height:46px;border:1px solid #9b2834;background:#fff0f1;color:#8b1f2b;font-weight:700}
 .audio-studio .source-box label,.audio-studio .audio-title-row label,.audio-studio .raw-transcript,.audio-studio .output-pane label{display:grid;gap:8px;color:var(--muted);font-size:11px;font-weight:700}
 .audio-studio .source-box input,.audio-studio .source-box textarea,.audio-studio .audio-source-panel select,.audio-studio .audio-title-row input,.audio-studio .raw-transcript textarea,.audio-studio .replace-row input,.audio-studio .output-pane input,.audio-studio .output-pane textarea{width:100%;min-width:0;border:1px solid var(--ink);border-radius:0;outline:0;background:transparent;color:var(--ink)}
 .audio-studio .source-box input,.audio-studio .audio-source-panel select,.audio-studio .audio-title-row input,.audio-studio .replace-row input,.audio-studio .output-pane input{height:50px;padding:0 13px}

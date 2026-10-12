@@ -220,6 +220,7 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .action-panel small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .publish-buttons > button { flex: 1; }
 .result-link { display: block; padding: 13px 15px; border: 1px solid var(--ink); background: var(--ink); color: white; font-size: 11px; font-weight: 700; text-align: center; text-decoration: none; }
+.result-link.success { border-color: #218255; background: #eaf9f1; color: #125c38; }
 .result-link.warning { border-color: #9a6800; background: #fff1bf; color: #694900; }
 .publish-success-links { grid-column: 1 / -1; display: flex; align-items: center; flex-wrap: wrap; gap: 8px 18px; padding: 16px 18px; border: 1px solid #218255; background: #eaf9f1; font-size: 11px; }
 .publish-success-links a { color: #125c38; font-weight: 700; }

@@ -63,6 +63,30 @@ def test_word_parser_extracts_title_summary_and_tags(tmp_path, monkeypatch):
     assert "<h1" not in article.content_html
 
 
+def test_short_abstract_uses_complete_opening_sentences():
+    source = "第一句话说明文章的核心背景。第二句话补充必要事实。" + "很长的后续内容，" * 30
+    assert parser._short_abstract(source) == "第一句话说明文章的核心背景。第二句话补充必要事实。"
+    assert len(parser._short_abstract("没有句号的很长内容，" * 30)) <= 151
+
+
+def test_preview_streams_assets_instead_of_embedding_base64(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    reference = save_asset(b"jpeg-bytes", "image/jpeg")
+    article = WebsiteImportArticle(
+        title="测试",
+        abstract="摘要",
+        content_html=f'<p>正文</p><img src="{reference}">',
+        source_type="docx",
+        source_ref="test.docx",
+    )
+
+    preview = parser.render_preview(article)
+
+    assert "data:image" not in preview
+    assert reference in preview
+    assert f'/api/v1/website-import/assets/{reference.removeprefix("ingest-asset://")}' in preview
+
+
 def test_sanitizer_preserves_safe_colors_and_normalizes_heading_size():
     cleaned = parser.sanitize_fragment(
         '<h2 style="font-size:88px;color:#A583FF;background-color:rgb(250, 240, 255);position:fixed">标题</h2>'

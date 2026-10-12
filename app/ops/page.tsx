@@ -682,8 +682,8 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
-          {props.publishResult?.public_url && <a className="result-link" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}
-          {props.publishResult?.admin_edit_url && <a className="result-link" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}
+          {props.publishResult?.public_url && <a className="result-link success" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}
+          {props.publishResult?.admin_edit_url && <a className="result-link success" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}
           {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载未上传的第 {issue.index} 张原图</a>)}
         </aside>
       </div>
