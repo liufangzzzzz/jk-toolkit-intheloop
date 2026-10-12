@@ -33,6 +33,7 @@ services:
       FEISHU_USER_ACCESS_TOKEN: ${FEISHU_USER_ACCESS_TOKEN:-}
       FEISHU_USER_REFRESH_TOKEN: ${FEISHU_USER_REFRESH_TOKEN:-}
       FEISHU_OAUTH_REDIRECT_URI: ${FEISHU_OAUTH_REDIRECT_URI:-}
+      FEISHU_OAUTH_SCOPES: ${FEISHU_OAUTH_SCOPES:-offline_access docx:document drive:drive minutes:minutes.basic:read minutes:minutes.transcript:export}
       NEXT_PUBLIC_SITE_ORIGIN: ${NEXT_PUBLIC_SITE_ORIGIN:-https://toolkit-intheloop.geekpark.net}
       FEISHU_API_BASE: ${FEISHU_API_BASE:-https://open.feishu.cn/open-apis}
       FEISHU_DOC_ORIGIN: ${FEISHU_DOC_ORIGIN:-https://geek.feishu.cn/docx}

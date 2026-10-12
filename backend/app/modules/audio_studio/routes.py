@@ -148,6 +148,7 @@ def _feishu_user_configured() -> bool:
     return bool(
         os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
         or os.environ.get('FEISHU_USER_REFRESH_TOKEN', '').strip()
+        or store.get_setting('feishu-user-access-token', '').strip()
         or store.get_setting('feishu-user-refresh-token', '').strip()
     )
 
@@ -160,7 +161,10 @@ def _feishu_app_configured() -> bool:
 
 
 async def _feishu_user_token(client: httpx.AsyncClient) -> str:
-    direct = os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
+    direct = (
+        os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
+        or store.get_setting('feishu-user-access-token', '').strip()
+    )
     refresh_token = store.get_setting('feishu-user-refresh-token', '').strip() or os.environ.get('FEISHU_USER_REFRESH_TOKEN', '').strip()
     app_id = os.environ.get('FEISHU_APP_ID', '').strip()
     app_secret = os.environ.get('FEISHU_APP_SECRET', '').strip()
@@ -585,10 +589,16 @@ def connect_feishu_user(request: Request):
     if not app_id or not os.environ.get('FEISHU_APP_SECRET', '').strip():
         raise HTTPException(503, '请先配置飞书应用 App ID 与 App Secret。')
     redirect_uri = _feishu_oauth_redirect_uri(request)
+    scopes = os.environ.get(
+        'FEISHU_OAUTH_SCOPES',
+        'offline_access docx:document drive:drive '
+        'minutes:minutes.basic:read minutes:minutes.transcript:export',
+    ).strip()
     query = urlencode({
         'app_id': app_id,
         'redirect_uri': redirect_uri,
         'state': _feishu_oauth_state(),
+        'scope': scopes,
     })
     return {
         'authorize_url': 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + query,
@@ -620,11 +630,22 @@ async def feishu_oauth_callback(request: Request, code: str = '', state: str = '
                 },
             )
             payload = _ensure_feishu_success(response, '飞书用户授权失败') or {}
-        refresh_token = str(payload.get('refresh_token') or (payload.get('data') or {}).get('refresh_token') or '').strip()
-        if not refresh_token:
-            raise ValueError('飞书没有返回长期用户授权')
-        store.set_setting('feishu-user-refresh-token', refresh_token)
-        return RedirectResponse(destination + '?feishu=connected')
+        data = payload.get('data') or {}
+        access_token = str(payload.get('access_token') or data.get('access_token') or '').strip()
+        refresh_token = str(payload.get('refresh_token') or data.get('refresh_token') or '').strip()
+        granted_scope = str(payload.get('scope') or data.get('scope') or '').strip()
+        if not access_token:
+            raise ValueError('飞书没有返回用户 access token')
+        store.set_setting('feishu-user-access-token', access_token)
+        store.set_setting('feishu-user-scope', granted_scope)
+        if refresh_token:
+            store.set_setting('feishu-user-refresh-token', refresh_token)
+            return RedirectResponse(destination + '?feishu=connected')
+        return RedirectResponse(
+            destination + '?feishu=connected&message=' + quote(
+                '用户身份已连接，但飞书没有返回长期授权；请确认应用已开通 offline_access 并发布新版本'
+            )
+        )
     except Exception as exc:
         return RedirectResponse(destination + '?feishu=error&message=' + quote(str(exc)[:160]))
 
@@ -745,6 +766,9 @@ async def export_feishu(body: FeishuExportInput):
     api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
     try:
         async with httpx.AsyncClient(timeout=60) as client:
+            # Use the same Feishu application's user identity. This is a
+            # user_access_token granted through the robot/app OAuth flow, not a
+            # tenant_access_token and not browser-session scraping.
             token = await _feishu_user_token(client)
             headers = {'Authorization': 'Bearer ' + token}
             folder_name = os.environ.get('FEISHU_EXPORT_FOLDER_NAME', '沟通记录').strip() or '沟通记录'
@@ -755,7 +779,7 @@ async def export_feishu(body: FeishuExportInput):
                     headers=headers,
                     params={'folder_token': '', 'page_size': 200},
                 )
-                list_payload = _ensure_feishu_success(list_response, '读取云盘文件夹失败') or {}
+                list_payload = _ensure_feishu_success(list_response, '读取用户云盘文件夹失败') or {}
                 matches = [
                     item for item in ((list_payload.get('data') or {}).get('files') or [])
                     if str(item.get('type') or '').lower() == 'folder'
@@ -764,12 +788,12 @@ async def export_feishu(body: FeishuExportInput):
                 ]
                 if not matches:
                     raise ValueError(
-                        f'没有在你的飞书云盘根目录找到“{folder_name}”文件夹。'
-                        '请确认用户授权包含云盘读取权限，或在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN'
+                        f'没有在当前授权用户的飞书云盘根目录找到“{folder_name}”文件夹。'
+                        '如果文件夹不在根目录，请在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN'
                     )
                 if len(matches) > 1:
                     raise ValueError(
-                        f'你的飞书云盘根目录有多个“{folder_name}”文件夹。'
+                        f'当前授权用户的云盘根目录有多个“{folder_name}”文件夹。'
                         '请在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN，避免导出到错误位置'
                     )
                 folder_token = str(matches[0]['token']).strip()
@@ -794,7 +818,7 @@ async def export_feishu(body: FeishuExportInput):
         return {'url': origin + '/' + document_id, 'document_id': document_id, 'folder_name': folder_name}
     except HTTPException: raise
     except Exception as exc:
-        raise HTTPException(502, f'飞书文档创建失败：{str(exc)[:320]}。请检查用户授权、云盘读取权限与 docx:document 权限。') from exc
+        raise HTTPException(502, f'飞书文档创建失败：{str(exc)[:320]}。请检查机器人应用的用户身份授权，以及 drive:drive 与 docx:document 用户权限。') from exc
 
 
 @router.post('/article')

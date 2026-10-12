@@ -70,7 +70,7 @@ export default function AudioStudio() {
     setSkills(skillResult);
     setSourceStatus(statusResult);
     const query = new URLSearchParams(window.location.search);
-    if (query.get('feishu') === 'connected') setNotice('飞书用户身份已连接，私有妙记读取和文档导出现在可以使用。');
+    if (query.get('feishu') === 'connected') setNotice(query.get('message') || '飞书用户身份已连接，私有妙记读取和文档导出现在可以使用。');
     if (query.get('feishu') === 'error') setError(query.get('message') || '飞书用户授权没有完成，请重试。');
     if (query.has('feishu')) window.history.replaceState({}, '', '/ops/audio');
   }, []);
@@ -275,7 +275,7 @@ export default function AudioStudio() {
   }
 
   async function exportFeishu(label: string, value: string) {
-    if (!sourceStatus.feishu_user_configured) { setError('请先点击“连接我的飞书”；导出文档必须以你的用户身份创建。'); return; }
+    if (!sourceStatus.feishu_user_configured) { setError('请先连接机器人应用的用户身份；文档将以该用户身份创建。'); return; }
     await run('feishu', async () => {
       const result = await api<{ url: string; folder_name?: string }>('/audio-studio/export-feishu', { method: 'POST', body: JSON.stringify({ title: `${project.title || '音频整理'} · ${label}`, content: value }) });
       window.open(result.url, '_blank', 'noopener,noreferrer');
@@ -316,7 +316,7 @@ export default function AudioStudio() {
       <header className="workspace-title"><div><p className="eyebrow">IN THE LOOP / AUDIO DESK</p><h1>音频整理</h1></div><p>优先读取现成 transcript。只有确实需要识别或生成时，才使用你明确选择的模型。</p></header>
       <div className="connection-cards" aria-label="必要配置">
         <div className={models.length ? 'ready' : 'pending'}><span>AI</span><strong>{models.length ? 'AI API 已配置' : 'AI API 未配置'}</strong><small>{models.length ? `${models.length} 个指定模型可选，每次由你决定` : '请在服务器 env 配置 Modelink API Key'}</small></div>
-        <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '飞书用户身份已连接' : '飞书用户身份未连接'}</strong><small>{sourceStatus.feishu_user_configured ? `私有妙记与文档导出使用你的身份；导出到“${sourceStatus.feishu_export_folder || '沟通记录'}”` : sourceStatus.feishu_app_configured ? '公开妙记可直接读取；连接后可读取私有妙记并导出文档' : '请先配置飞书应用参数'}</small>{!sourceStatus.feishu_user_configured && sourceStatus.feishu_oauth_available && <button onClick={connectFeishu} disabled={busy !== ''}>{busy === 'feishu-connect' ? '连接中' : '连接我的飞书'} →</button>}</div>
+        <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '机器人应用的用户身份已连接' : '机器人应用的用户身份未连接'}</strong><small>{sourceStatus.feishu_user_configured ? `私有妙记与文档导出使用该用户身份；导出到“${sourceStatus.feishu_export_folder || '沟通记录'}”` : sourceStatus.feishu_app_configured ? '连接后可读取私有妙记并以用户身份导出文档' : '请先在服务器 env 配置机器人 App ID 与 App Secret'}</small>{!sourceStatus.feishu_user_configured && sourceStatus.feishu_oauth_available && <button onClick={connectFeishu} disabled={busy !== ''}>{busy === 'feishu-connect' ? '连接中' : '连接机器人用户身份'} →</button>}</div>
         <div className={sourceStatus.skills_configured ? 'ready' : 'initial'}><span>SK</span><strong>{sourceStatus.skills_configured ? '生成规则已配置' : '正在使用初始规则'}</strong><small>清洗、简版与稿件规则可以随时修改</small><button onClick={() => setRulesOpen(true)}>{sourceStatus.skills_configured ? '修改' : '配置'} →</button></div>
       </div>
       {(notice || error || modelNotice) && <div className={`operation-notice audio-page-notice ${error ? 'error' : 'success'}`} role="status">{error || notice || modelNotice}</div>}
