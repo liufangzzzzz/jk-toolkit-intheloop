@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import re
+from io import BytesIO
 from typing import Any
 
 import httpx
 from bs4 import BeautifulSoup
+from PIL import Image, ImageOps
 
 from ...database import database
 from ...geekpark_auth import list_geekpark_columns, login_geekpark
@@ -63,7 +65,7 @@ def _account_env(account_id: str) -> tuple[str, str, str]:
     suffix = "" if account_id == "default" else f"_{account_id}"
     login_name = os.environ.get(f"GEEKPARK_LOGIN_NAME{suffix}", "").strip()
     password = os.environ.get(f"GEEKPARK_LOGIN_PASSWORD{suffix}", "")
-    label = os.environ.get(f"GEEKPARK_ACCOUNT_NAME{suffix}", "").strip() or login_name or f"官网账号 {account_id}"
+    label = os.environ.get(f"GEEKPARK_ACCOUNT_NAME{suffix}", "").strip()
     return login_name, password, label
 
 
@@ -73,9 +75,14 @@ def _account_settings_key(account_id: str) -> str:
 
 def _available_accounts() -> list[dict[str, Any]]:
     accounts = []
+    settings = load_settings()
     for account_id in ["default", *[str(index) for index in range(2, 10)]]:
-        login_name, password, label = _account_env(account_id)
+        login_name, password, configured_label = _account_env(account_id)
         if login_name and password:
+            saved = settings.get(_account_settings_key(account_id)) or {}
+            generic_labels = {"默认", "默认官网账号", "官网账号 default"}
+            label = str(saved.get("nickname") or "").strip() if configured_label in generic_labels else configured_label
+            label = label or str(saved.get("nickname") or "").strip() or login_name
             accounts.append({"id": account_id, "label": label})
     return accounts
 
@@ -97,7 +104,10 @@ def connection_status(account_id: str = "default") -> dict[str, Any]:
     if account_id not in valid_ids and available:
         account_id = available[0]["id"]
     website = load_settings().get(_account_settings_key(account_id)) or {}
-    login_name, password, label = _account_env(account_id)
+    login_name, password, configured_label = _account_env(account_id)
+    generic_labels = {"默认", "默认官网账号", "官网账号 default"}
+    label = str(website.get("nickname") or "").strip() if configured_label in generic_labels else configured_label
+    label = label or str(website.get("nickname") or "").strip() or login_name
     return {
         "account_id": account_id,
         "account_label": label,
@@ -146,6 +156,36 @@ async def _upload_image(reference: str, access_key: str) -> dict[str, Any]:
     if not asset:
         raise RuntimeError("有一张待上传图片已过期，请重新解析来源")
     raw, filename, content_type = asset
+
+    def compressed_image() -> tuple[bytes, str, str]:
+        try:
+            with Image.open(BytesIO(raw)) as source:
+                frame = ImageOps.exif_transpose(source.copy())
+            if frame.mode not in {"RGB", "L"}:
+                background = Image.new("RGB", frame.size, "white")
+                if "A" in frame.getbands():
+                    background.paste(frame, mask=frame.getchannel("A"))
+                else:
+                    background.paste(frame.convert("RGB"))
+                frame = background
+            else:
+                frame = frame.convert("RGB")
+            smallest = b""
+            for max_edge in (4096, 3200, 2560, 2048):
+                candidate = frame.copy()
+                candidate.thumbnail((max_edge, max_edge))
+                for quality in (86, 74, 62, 52):
+                    output = BytesIO()
+                    candidate.save(output, format="JPEG", quality=quality, optimize=True)
+                    smallest = output.getvalue()
+                    if len(smallest) <= 4 * 1024 * 1024:
+                        return smallest, f"{filename.rsplit('.', 1)[0]}.jpg", "image/jpeg"
+            return smallest, f"{filename.rsplit('.', 1)[0]}.jpg", "image/jpeg"
+        except Exception as exc:
+            raise RuntimeError(f"图片过大且自动压缩失败：{str(exc)[:120]}") from exc
+
+    if len(raw) > 8 * 1024 * 1024:
+        raw, filename, content_type = compressed_image()
     base = os.environ.get("WEBSITE_GEEKPARK_API_BASE", "https://mainssl.geekpark.net").rstrip("/")
     roles = os.environ.get("WEBSITE_GEEKPARK_ROLES", "dev").strip()
     async with httpx.AsyncClient(timeout=60) as client:
@@ -154,10 +194,18 @@ async def _upload_image(reference: str, access_key: str) -> dict[str, Any]:
             params={"roles": roles, "access_key": access_key},
             files={"upload_file": (filename, raw, content_type)},
         )
+        if response.status_code == 413:
+            raw, filename, content_type = compressed_image()
+            response = await client.post(
+                f"{base}/api/v1/admin/images",
+                params={"roles": roles, "access_key": access_key},
+                files={"upload_file": (filename, raw, content_type)},
+            )
     if response.status_code in {401, 403}:
-        raise PermissionError("官网登录已过期")
+        raise PermissionError(f"官网图片接口拒绝访问（HTTP {response.status_code}），正在刷新登录")
     if not 200 <= response.status_code < 300:
-        raise RuntimeError(f"官网图片上传失败（HTTP {response.status_code}）")
+        detail = response.text[:180].strip()
+        raise RuntimeError(f"官网图片接口上传失败（HTTP {response.status_code}）{f'：{detail}' if detail else ''}")
     try:
         payload = response.json() if response.content else {}
     except ValueError:
@@ -302,7 +350,7 @@ async def publish_article(
         response = await _post_article(payload, access_key)
     if response.status_code not in {200, 201}:
         detail = response.text[:300]
-        raise RuntimeError(f"官网{'发布' if mode == 'publish' else '草稿创建'}失败（HTTP {response.status_code}）：{detail}")
+        raise RuntimeError(f"官网文章接口{'发布' if mode == 'publish' else '创建草稿'}失败（HTTP {response.status_code}）：{detail}")
     result = response.json()
     result_post = result.get("post") if isinstance(result.get("post"), dict) else {}
     article_id = result.get("id") or result_post.get("id")

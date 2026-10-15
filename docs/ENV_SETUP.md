@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 工作台登录 | `TOOLKIT_INTHELOOP_PASSWORD` | 必填；由你决定一个团队管理密码 |
 | Modelink | `MODELINK_API_KEY` | 使用翻译、音频清洗、简版、纠错和生成稿件时填写 |
-| 极客公园官网 | `GEEKPARK_LOGIN_NAME`、`GEEKPARK_LOGIN_PASSWORD` | 默认官网发布账号 |
+| 极客公园官网 | `GEEKPARK_ACCOUNT_NAME`、`GEEKPARK_LOGIN_NAME`、`GEEKPARK_LOGIN_PASSWORD` | 第一个官网发布账号；当前显示名填写 `Li Yuan` |
 | 极客公园官网第二账号 | `GEEKPARK_ACCOUNT_NAME_2`、`GEEKPARK_LOGIN_NAME_2`、`GEEKPARK_LOGIN_PASSWORD_2` | 三项填写后，官网上传页自动出现账号选择 |
 | 微信公众号 | `WECHAT_APP_SECRET` | 从工作台写入公众号草稿箱时填写；AppID 已预填，仍可修改 |
 | 飞书应用 | `FEISHU_APP_ID`、`FEISHU_APP_SECRET` | 刷新飞书用户授权时填写；不会用机器人身份读取妙记 |

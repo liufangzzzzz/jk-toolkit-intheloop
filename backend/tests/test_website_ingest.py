@@ -7,6 +7,7 @@ import zipfile
 
 import httpx
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import database as database_module
 from app.main import app
@@ -92,6 +93,22 @@ def test_website_status_exposes_two_separate_env_accounts(monkeypatch):
     ]
 
 
+def test_default_account_label_uses_connected_author_name(monkeypatch):
+    monkeypatch.setenv("GEEKPARK_LOGIN_NAME", "li@example.com")
+    monkeypatch.setenv("GEEKPARK_LOGIN_PASSWORD", "secret")
+    monkeypatch.setenv("GEEKPARK_ACCOUNT_NAME", "默认官网账号")
+    monkeypatch.delenv("GEEKPARK_LOGIN_NAME_2", raising=False)
+    monkeypatch.delenv("GEEKPARK_LOGIN_PASSWORD_2", raising=False)
+    monkeypatch.setattr(publisher, "load_settings", lambda: {
+        "website": {"access_key": "key", "nickname": "Li Yuan"},
+    })
+
+    status = publisher.connection_status()
+
+    assert status["account_label"] == "Li Yuan"
+    assert status["accounts"] == [{"id": "default", "label": "Li Yuan"}]
+
+
 def test_preview_streams_assets_instead_of_embedding_base64(tmp_path, monkeypatch):
     monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
     reference = save_asset(b"jpeg-bytes", "image/jpeg")
@@ -154,6 +171,33 @@ def test_image_upload_uses_location_header_when_body_has_no_url(tmp_path, monkey
     image = asyncio.run(publisher._upload_image(reference, "access-key"))
 
     assert image["url"] == "https://cdn.geekpark.net/from-location.jpg"
+
+
+def test_image_upload_compresses_and_retries_after_413(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    source = io.BytesIO()
+    Image.new("RGB", (80, 80), "purple").save(source, format="PNG")
+    reference = save_asset(source.getvalue(), "image/png")
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.content)
+        if len(attempts) == 1:
+            return httpx.Response(413, text="too large", request=request)
+        return httpx.Response(201, json={"image": {"url": "https://cdn.geekpark.net/retried.jpg"}}, request=request)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        publisher.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    image = asyncio.run(publisher._upload_image(reference, "access-key"))
+
+    assert len(attempts) == 2
+    assert b"image/jpeg" in attempts[1]
+    assert image["url"] == "https://cdn.geekpark.net/retried.jpg"
 
 
 def test_sanitizer_preserves_safe_colors_and_normalizes_heading_size():
@@ -234,6 +278,33 @@ def test_wechat_parser_localizes_images_and_removes_unsafe_markup(tmp_path, monk
     assert "<iframe" not in article.content_html
     assert article.cover_asset.startswith("ingest-asset://")
     assert any("1 个视频模块" in warning for warning in article.warnings)
+
+
+def test_wechat_parser_recognizes_image_bytes_with_generic_content_type(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
+    page = '<h1 id="activity-name">图片测试</h1><section id="js_content"><img data-src="https://mmbiz.qpic.cn/body.jpg"></section>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "mp.weixin.qq.com":
+            return httpx.Response(200, text=page, request=request)
+        return httpx.Response(
+            200,
+            content=b"\xff\xd8\xff" + b"jpeg-content",
+            headers={"content-type": "application/octet-stream"},
+            request=request,
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        parser.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+
+    article = asyncio.run(parser.parse_wechat_url("https://mp.weixin.qq.com/s/test"))
+
+    assert "ingest-asset://" in article.content_html
+    assert not article.image_issues
 
 
 def test_database_migrates_existing_publish_records(tmp_path, monkeypatch):

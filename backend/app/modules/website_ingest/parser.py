@@ -20,7 +20,7 @@ from .models import WebsiteImageIssue, WebsiteImportArticle
 from .tags import suggest_tags
 
 _MAX_DOCUMENT_BYTES = 60 * 1024 * 1024
-_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+_MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _WECHAT_HOSTS = {"mp.weixin.qq.com"}
 _ALLOWED_TAGS = {
     "p", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "s",
@@ -133,8 +133,21 @@ async def _download_image(client: httpx.AsyncClient, url: str) -> tuple[str, str
         response.raise_for_status()
         raw = response.content
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-        if not content_type.startswith("image/") or not raw or len(raw) > _MAX_IMAGE_BYTES:
-            return url, "", "返回内容不是有效图片，或图片超过 15MB"
+        if not content_type.startswith("image/"):
+            if raw.startswith(b"\xff\xd8\xff"):
+                content_type = "image/jpeg"
+            elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+                content_type = "image/png"
+            elif raw.startswith((b"GIF87a", b"GIF89a")):
+                content_type = "image/gif"
+            elif raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
+                content_type = "image/webp"
+        if not raw:
+            return url, "", "图片返回内容为空"
+        if not content_type.startswith("image/"):
+            return url, "", "图片地址返回的不是图片内容"
+        if len(raw) > _MAX_IMAGE_BYTES:
+            return url, "", "图片原文件超过 30MB"
         return url, save_asset(raw, content_type, suffix=urlparse(url).path), ""
     except Exception as exc:
         return url, "", str(exc)[:160] or "图片下载失败"
