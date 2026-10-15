@@ -18,6 +18,68 @@ from .parser import sanitize_fragment
 _ASSET_RE = re.compile(r"ingest-asset://[a-f0-9]{32}\.[a-z0-9]{1,8}")
 
 
+class UploadedImageMissingUrl(RuntimeError):
+    """The website accepted an image but did not expose its usable URL."""
+
+
+def _uploaded_image_from_response(payload: Any, location: str = "") -> dict[str, Any]:
+    """Accept the response shapes used by old and new GeekPark image APIs."""
+    preferred_keys = ("image", "data", "result", "asset", "file")
+    url_keys = ("url", "image_url", "imageUrl", "src", "original_url", "originalUrl")
+    id_keys = ("id", "image_id", "imageId", "asset_id", "assetId")
+
+    def find(value: Any) -> dict[str, Any] | None:
+        if isinstance(value, dict):
+            url = next((str(value.get(key) or "").strip() for key in url_keys if value.get(key)), "")
+            if url:
+                image_id = next((value.get(key) for key in id_keys if value.get(key) is not None), "")
+                return {"url": url.replace("http://", "https://", 1), "id": image_id or ""}
+            for key in preferred_keys:
+                if key in value:
+                    found = find(value[key])
+                    if found:
+                        return found
+            for child in value.values():
+                found = find(child)
+                if found:
+                    return found
+        elif isinstance(value, list):
+            for child in value:
+                found = find(child)
+                if found:
+                    return found
+        return None
+
+    found = find(payload)
+    if found:
+        return found
+    if location:
+        return {"url": location.replace("http://", "https://", 1), "id": ""}
+    raise UploadedImageMissingUrl("官网已接收图片，但响应中没有可写入正文的图片地址")
+
+
+def _account_env(account_id: str) -> tuple[str, str, str]:
+    account_id = account_id if account_id in {str(index) for index in range(2, 10)} else "default"
+    suffix = "" if account_id == "default" else f"_{account_id}"
+    login_name = os.environ.get(f"GEEKPARK_LOGIN_NAME{suffix}", "").strip()
+    password = os.environ.get(f"GEEKPARK_LOGIN_PASSWORD{suffix}", "")
+    label = os.environ.get(f"GEEKPARK_ACCOUNT_NAME{suffix}", "").strip() or login_name or f"官网账号 {account_id}"
+    return login_name, password, label
+
+
+def _account_settings_key(account_id: str) -> str:
+    return "website" if account_id == "default" else f"website_{account_id}"
+
+
+def _available_accounts() -> list[dict[str, Any]]:
+    accounts = []
+    for account_id in ["default", *[str(index) for index in range(2, 10)]]:
+        login_name, password, label = _account_env(account_id)
+        if login_name and password:
+            accounts.append({"id": account_id, "label": label})
+    return accounts
+
+
 def _industry_column_id(columns: list[dict[str, Any]]) -> int:
     exact = next((item for item in columns if str(item.get("title") or "").strip() == "行业资讯"), None)
     partial = next((item for item in columns if "行业资讯" in str(item.get("title") or "")), None)
@@ -29,15 +91,19 @@ def _industry_column_id(columns: list[dict[str, Any]]) -> int:
     return 0
 
 
-def connection_status() -> dict[str, Any]:
-    website = load_settings().get("website") or {}
-    fixed_credentials = bool(
-        os.environ.get("GEEKPARK_LOGIN_NAME", "").strip()
-        and os.environ.get("GEEKPARK_LOGIN_PASSWORD", "")
-    )
+def connection_status(account_id: str = "default") -> dict[str, Any]:
+    available = _available_accounts()
+    valid_ids = {item["id"] for item in available}
+    if account_id not in valid_ids and available:
+        account_id = available[0]["id"]
+    website = load_settings().get(_account_settings_key(account_id)) or {}
+    login_name, password, label = _account_env(account_id)
     return {
+        "account_id": account_id,
+        "account_label": label,
+        "accounts": available,
         "connected": bool(website.get("access_key")),
-        "fixed_credentials": fixed_credentials,
+        "fixed_credentials": bool(login_name and password),
         "nickname": website.get("nickname", ""),
         "author_id": website.get("author_id"),
         "column_id": int(website.get("column_id") or 0),
@@ -45,25 +111,26 @@ def connection_status() -> dict[str, Any]:
     }
 
 
-async def connect_fixed_account(*, force: bool = False) -> dict[str, Any]:
-    status = connection_status()
+async def connect_fixed_account(account_id: str = "default", *, force: bool = False) -> dict[str, Any]:
+    status = connection_status(account_id)
+    account_id = status["account_id"]
     if status["connected"] and not force:
         return status
-    login_name = os.environ.get("GEEKPARK_LOGIN_NAME", "").strip()
-    password = os.environ.get("GEEKPARK_LOGIN_PASSWORD", "")
+    login_name, password, _label = _account_env(account_id)
     if not login_name or not password:
         if status["connected"]:
             return status
         raise ValueError("服务器尚未配置固定的极客公园官网账号和密码")
     result = await login_geekpark(login_name, password)
     columns = await list_geekpark_columns()
-    current = load_settings().get("website") or {}
+    settings_key = _account_settings_key(account_id)
+    current = load_settings().get(settings_key) or {}
     current_column = int(current.get("column_id") or 0)
     valid_ids = {int(item["id"]) for item in columns}
     if current_column not in valid_ids:
         current_column = _industry_column_id(columns) or (int(columns[0]["id"]) if columns else 0)
     update_settings(
-        "website",
+        settings_key,
         access_key=result.access_key,
         nickname=result.nickname,
         author_id=result.author_id,
@@ -71,7 +138,7 @@ async def connect_fixed_account(*, force: bool = False) -> dict[str, Any]:
         column_id=current_column,
         tested=True,
     )
-    return connection_status()
+    return connection_status(account_id)
 
 
 async def _upload_image(reference: str, access_key: str) -> dict[str, Any]:
@@ -89,14 +156,13 @@ async def _upload_image(reference: str, access_key: str) -> dict[str, Any]:
         )
     if response.status_code in {401, 403}:
         raise PermissionError("官网登录已过期")
-    if response.status_code not in {200, 201}:
+    if not 200 <= response.status_code < 300:
         raise RuntimeError(f"官网图片上传失败（HTTP {response.status_code}）")
-    payload = response.json()
-    image = payload.get("image") or payload
-    url = str(image.get("url") or "").replace("http://", "https://", 1)
-    if not url:
-        raise RuntimeError("官网图片上传响应缺少 URL")
-    return {"url": url, "id": image.get("id") or ""}
+    try:
+        payload = response.json() if response.content else {}
+    except ValueError:
+        payload = {}
+    return _uploaded_image_from_response(payload, response.headers.get("location", ""))
 
 
 async def _prepare_images(
@@ -123,7 +189,10 @@ async def _prepare_images(
                 "asset_url": f"/api/v1/website-import/assets/{token}?download=true",
                 "message": message,
             })
-            warnings.append(f"第 {index} 张图片上传失败：{message}；可下载原图后在官网后台手动补回")
+            if isinstance(exc, UploadedImageMissingUrl):
+                warnings.append(f"第 {index} 张图片已被官网接收，但没有返回图片地址，未能自动写入正文；可在官网后台确认并补回")
+            else:
+                warnings.append(f"第 {index} 张图片上传失败：{message}；可下载原图后在官网后台手动补回")
     content = article.content_html
     for reference, image in uploaded.items():
         content = content.replace(reference, image["url"])
@@ -182,12 +251,15 @@ async def publish_article(
     mode: str,
     column_id: int | None,
     request_id: str,
+    account_id: str = "default",
 ) -> dict[str, Any]:
     existing = _existing_result(request_id)
     if existing:
         return existing
-    await connect_fixed_account()
-    saved = load_settings().get("website") or {}
+    status = await connect_fixed_account(account_id=account_id)
+    account_id = status["account_id"]
+    settings_key = _account_settings_key(account_id)
+    saved = load_settings().get(settings_key) or {}
     access_key = str(saved.get("access_key") or "").strip()
     author_id = saved.get("author_id")
     if not access_key or author_id is None:
@@ -196,10 +268,10 @@ async def publish_article(
     try:
         content, cover, warnings, failed_images = await _prepare_images(article, access_key)
     except PermissionError:
-        if not connection_status()["fixed_credentials"]:
+        if not connection_status(account_id)["fixed_credentials"]:
             raise
-        await connect_fixed_account(force=True)
-        saved = load_settings().get("website") or {}
+        await connect_fixed_account(account_id=account_id, force=True)
+        saved = load_settings().get(settings_key) or {}
         access_key = str(saved.get("access_key") or "").strip()
         author_id = saved.get("author_id")
         content, cover, warnings, failed_images = await _prepare_images(article, access_key)
@@ -222,9 +294,9 @@ async def publish_article(
         payload["cover_id"] = cover["id"]
         payload["cover_url"] = cover["url"]
     response = await _post_article(payload, access_key)
-    if response.status_code in {401, 403} and connection_status()["fixed_credentials"]:
-        await connect_fixed_account(force=True)
-        saved = load_settings().get("website") or {}
+    if response.status_code in {401, 403} and connection_status(account_id)["fixed_credentials"]:
+        await connect_fixed_account(account_id=account_id, force=True)
+        saved = load_settings().get(settings_key) or {}
         access_key = str(saved.get("access_key") or "").strip()
         payload["authors"] = [saved.get("author_id")]
         response = await _post_article(payload, access_key)

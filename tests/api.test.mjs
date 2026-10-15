@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { api, validateWebsiteParseResult } from '../lib/api.ts';
+import { api, normalizeWebsiteParseResult, validateWebsiteParseResult } from '../lib/api.ts';
 import { forwardResponse, proxyHeaders } from '../lib/proxy.ts';
 
 const good = () => ({ article: { title: '文章', abstract: '', content_html: '<p>正文</p>', cover_asset: '', source_type: 'docx', source_ref: 'test.docx', tags: [], warnings: [], image_issues: [] }, preview_html: '<html></html>' });
 
-test('valid parse response is accepted, missing article/arrays are rejected before render', () => {
+test('valid parse response is accepted and optional fields from older backends are normalized', () => {
   validateWebsiteParseResult(good());
-  for (const value of [{}, null, { article: {} }, { ...good(), article: { ...good().article, tags: null } }, { ...good(), article: { ...good().article, image_issues: [{}] } }]) {
+  for (const value of [{}, null, { article: {} }]) {
     assert.throws(() => validateWebsiteParseResult(value), /解析结果不完整/);
   }
+  const normalized = normalizeWebsiteParseResult({ ...good(), article: { title: '文章', content_html: '<p>正文</p>', tags: null, image_issues: [{}] } });
+  assert.deepEqual(normalized.article.tags, []);
+  assert.equal(normalized.article.image_issues[0].message, '图片未能导入');
 });
 test('truncated successful HTTP response is an error, never an empty success', async (t) => {
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, status: 200, json: async () => { throw new TypeError('terminated'); } }));

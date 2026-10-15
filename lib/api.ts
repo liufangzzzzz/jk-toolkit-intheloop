@@ -32,19 +32,35 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 /** Validate everything the preview reads before switching out of the import screen. */
-export function validateWebsiteParseResult(value: unknown): void {
-  const invalid = () => { throw new Error('解析结果不完整，请重新解析。文件仍保留在待处理列表中。'); };
+export function normalizeWebsiteParseResult(value: unknown): Record<string, unknown> {
+  const invalid = (): never => { throw new Error('解析结果不完整，请重新解析。文件仍保留在待处理列表中。'); };
   if (!isRecord(value) || typeof value.preview_html !== 'string' || !isRecord(value.article)) return invalid();
   const article = value.article;
-  for (const field of ['title', 'abstract', 'content_html', 'cover_asset', 'source_type', 'source_ref']) {
-    if (typeof article[field] !== 'string') return invalid();
-  }
+  for (const field of ['title', 'content_html']) if (typeof article[field] !== 'string') return invalid();
   if (!String(article.title).trim() || !String(article.content_html).trim()) return invalid();
-  for (const field of ['tags', 'warnings']) {
-    if (!Array.isArray(article[field]) || !article[field].every((item) => typeof item === 'string')) return invalid();
-  }
-  if (!Array.isArray(article.image_issues) || !article.image_issues.every((issue) => (
-    isRecord(issue) && typeof issue.index === 'number'
-    && ['label', 'message', 'source_url', 'asset_url'].every((field) => typeof issue[field] === 'string')
-  ))) return invalid();
+  const strings = (input: unknown) => Array.isArray(input) ? input.filter((item): item is string => typeof item === 'string') : [];
+  const issues = Array.isArray(article.image_issues) ? article.image_issues.filter(isRecord).map((issue, index) => ({
+    index: typeof issue.index === 'number' ? issue.index : index + 1,
+    label: typeof issue.label === 'string' ? issue.label : '',
+    message: typeof issue.message === 'string' ? issue.message : '图片未能导入',
+    source_url: typeof issue.source_url === 'string' ? issue.source_url : '',
+    asset_url: typeof issue.asset_url === 'string' ? issue.asset_url : '',
+  })) : [];
+  return {
+    ...value,
+    article: {
+      ...article,
+      abstract: typeof article.abstract === 'string' ? article.abstract : '',
+      cover_asset: typeof article.cover_asset === 'string' ? article.cover_asset : '',
+      source_type: typeof article.source_type === 'string' ? article.source_type : 'docx',
+      source_ref: typeof article.source_ref === 'string' ? article.source_ref : '',
+      tags: strings(article.tags),
+      warnings: strings(article.warnings),
+      image_issues: issues,
+    },
+  };
+}
+
+export function validateWebsiteParseResult(value: unknown): void {
+  normalizeWebsiteParseResult(value);
 }

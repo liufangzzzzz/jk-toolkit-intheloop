@@ -1,6 +1,6 @@
 'use client';
 
-import { api, validateWebsiteParseResult } from '../../lib/api';
+import { api, normalizeWebsiteParseResult } from '../../lib/api';
 import { DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type Tool = 'wechat' | 'website';
@@ -65,6 +65,9 @@ type WebsiteParseResult = {
 };
 
 type WebsiteStatus = {
+  account_id: string;
+  account_label: string;
+  accounts: Array<{ id: string; label: string }>;
   connected: boolean;
   fixed_credentials: boolean;
   nickname: string;
@@ -143,6 +146,7 @@ export default function OperationsWorkbench() {
   const [websiteRequestId, setWebsiteRequestId] = useState('');
   const [selectedColumn, setSelectedColumn] = useState(0);
   const [websitePublishResult, setWebsitePublishResult] = useState<PublishResult | null>(null);
+  const [selectedWebsiteAccount, setSelectedWebsiteAccount] = useState('default');
 
   const loadWechatSettings = useCallback(async () => {
     try {
@@ -155,10 +159,11 @@ export default function OperationsWorkbench() {
     }
   }, []);
 
-  const loadWebsiteStatus = useCallback(async (source: 'url' | 'word') => {
+  const loadWebsiteStatus = useCallback(async (source: 'url' | 'word', accountId = 'default') => {
     try {
-      const next = await api<WebsiteStatus>('/website-import/status');
+      const next = await api<WebsiteStatus>(`/website-import/status?account_id=${encodeURIComponent(accountId)}`);
       setWebsiteStatus(next);
+      setSelectedWebsiteAccount(next.account_id);
       setSelectedColumn(preferredColumn(next, source));
     } catch {
       setWebsiteStatus(null);
@@ -302,7 +307,7 @@ export default function OperationsWorkbench() {
     setWebsiteBusy('connecting');
     setWebsiteNotice('');
     try {
-      const next = await api<WebsiteStatus>('/website-import/connect', { method: 'POST' });
+      const next = await api<WebsiteStatus>(`/website-import/connect?account_id=${encodeURIComponent(selectedWebsiteAccount)}`, { method: 'POST' });
       setWebsiteStatus(next);
       setSelectedColumn(preferredColumn(next, websiteSource));
       setWebsiteNotice(`官网账号连接成功${next.nickname ? `：${next.nickname}` : ''}`);
@@ -336,20 +341,20 @@ export default function OperationsWorkbench() {
     try {
       let parsed: WebsiteParseResult;
       if (websiteSource === 'url') {
-        parsed = await api<WebsiteParseResult>('/website-import/parse-url', {
+        parsed = normalizeWebsiteParseResult(await api<unknown>('/website-import/parse-url', {
           method: 'POST',
           body: JSON.stringify({ source_url: websiteUrl.trim() }),
-        });
+        })) as WebsiteParseResult;
       } else {
         const form = new FormData();
         form.set('file', wordFiles[0]);
-        parsed = await api<WebsiteParseResult>('/website-import/parse-file', {
+        parsed = normalizeWebsiteParseResult(await api<unknown>('/website-import/parse-file', {
           method: 'POST',
           body: form,
-        });
+        })) as WebsiteParseResult;
       }
-      validateWebsiteParseResult(parsed);
       setWebsiteParsed(parsed);
+      setWebsiteNotice(`解析成功：${parsed.article.title}`);
       if (websiteSource === 'word') setWordFiles((current) => current.slice(1));
       setSelectedColumn(preferredColumn(websiteStatus, websiteSource));
       setWebsiteRequestId(requestId('website'));
@@ -378,13 +383,14 @@ export default function OperationsWorkbench() {
           article: websiteParsed.article,
           mode,
           column_id: selectedColumn || null,
-          request_id: `${websiteRequestId}:${mode}`,
+          request_id: `${websiteRequestId}:${mode}:${selectedWebsiteAccount}`,
+          account_id: selectedWebsiteAccount,
         }),
       });
       setWebsitePublishResult(result);
       const remaining = wordFiles.length;
       setWebsiteNotice(`${mode === 'publish' ? '官网文章已发布' : '官网草稿已创建'}${result.duplicate_prevented ? '（已阻止重复提交）' : ''}${remaining ? `，还有 ${remaining} 篇待审核` : ''}`);
-      await loadWebsiteStatus(websiteSource);
+      await loadWebsiteStatus(websiteSource, selectedWebsiteAccount);
       window.setTimeout(() => setWebsiteParsed(null), 1200);
     } catch (failure) {
       setWebsiteNotice(failure instanceof Error ? failure.message : '官网写入失败');
@@ -478,8 +484,15 @@ export default function OperationsWorkbench() {
               notice={websiteNotice}
               parsed={websiteParsed}
               selectedColumn={selectedColumn}
+              selectedAccount={selectedWebsiteAccount}
               publishResult={websitePublishResult}
               onConnect={connectWebsite}
+              onAccount={(accountId) => {
+                setSelectedWebsiteAccount(accountId);
+                setWebsiteNotice('');
+                setWebsitePublishResult(null);
+                void loadWebsiteStatus(websiteSource, accountId);
+              }}
               onSource={(source) => {
                 setWebsiteSource(source);
                 setSelectedColumn(preferredColumn(websiteStatus, source));
@@ -586,8 +599,10 @@ type WebsiteWorkspaceProps = {
   notice: string;
   parsed: WebsiteParseResult | null;
   selectedColumn: number;
+  selectedAccount: string;
   publishResult: PublishResult | null;
   onConnect: () => void;
+  onAccount: (accountId: string) => void;
   onSource: (source: 'url' | 'word') => void;
   onSourceUrl: (value: string) => void;
   onFiles: (files: File[]) => void;
@@ -684,7 +699,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
           {props.publishResult?.public_url && <a className="result-link success" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}
           {props.publishResult?.admin_edit_url && <a className="result-link success" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}
-          {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载未上传的第 {issue.index} 张原图</a>)}
+          {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载需手动处理的第 {issue.index} 张原图</a>)}
         </aside>
       </div>
     );
@@ -696,6 +711,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
       <section className="control-panel connection-panel">
         <div className="section-heading"><span>01</span><div><h2>极客公园官网连接</h2><p className={status?.connected ? 'state-ok' : 'state-idle'}>{status?.connected ? '已连接' : '未连接'}</p></div></div>
         <dl className="connection-summary">
+          {status && status.accounts.length > 1 && <div><dt>发布账号</dt><dd><select value={props.selectedAccount} onChange={(event) => props.onAccount(event.target.value)}>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></dd></div>}
           <div><dt>服务器账号</dt><dd>{status?.fixed_credentials ? '已配置' : '未配置'}</dd></div>
           <div><dt>当前作者</dt><dd>{status?.nickname || '尚未连接'}</dd></div>
         </dl>
@@ -726,7 +742,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
         <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
-      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张失败原图</a>)}</div>}
+      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张待处理原图</a>)}</div>}
     </div>
   );
 }
