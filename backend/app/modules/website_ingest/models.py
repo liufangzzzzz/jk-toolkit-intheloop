@@ -30,6 +30,7 @@ class WebsitePublishRequest(BaseModel):
     mode: Literal["draft", "publish"] = "draft"
     column_id: int | None = None
     request_id: str = Field(min_length=1, max_length=160)
+    account_id: str = Field(default="default", pattern=r"^(?:default|[2-9])$")
 
 
 class AgentWebsiteUrlRequest(BaseModel):

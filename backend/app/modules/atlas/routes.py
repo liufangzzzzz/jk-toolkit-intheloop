@@ -19,6 +19,9 @@ public_router = APIRouter(prefix='/api/v1/public/atlas')
 class EditorialSkill(BaseModel):
     instructions: str = Field(min_length=20, max_length=20000)
 
+class HomepageFeatured(BaseModel):
+    content_ids: list[str] = Field(default_factory=list, max_length=100)
+
 @router.get('')
 def catalogue(): return store.catalogue()
 
@@ -97,6 +100,23 @@ def update_editorial_skill(body: EditorialSkill):
     store.set_setting('english-editor', body.instructions.strip())
     return {'ok': True}
 
+@router.get('/analyzer-skill')
+def analyzer_skill():
+    default = Path(__file__).with_name('content-analyzer.md').read_text()
+    return {'instructions': store.get_setting('content-analyzer', default)}
+
+@router.put('/analyzer-skill')
+def update_analyzer_skill(body: EditorialSkill):
+    store.set_setting('content-analyzer', body.instructions.strip())
+    return {'ok': True}
+
+@router.put('/homepage-featured')
+def update_homepage_featured(body: HomepageFeatured):
+    known = {c['id'] for c in store.catalogue()['contents']}
+    if not set(body.content_ids).issubset(known): raise HTTPException(422, '精选内容不存在')
+    store.set_setting('homepage-featured', json.dumps(list(dict.fromkeys(body.content_ids)), ensure_ascii=False))
+    return {'ok': True}
+
 @router.post('/generate')
 async def generate(body: Generate):
     try: allowed = {x['id'] for x in await model_options()}
@@ -109,9 +129,12 @@ async def generate(body: Generate):
     tasks = {
         'english': store.get_setting('english-editor', Path(__file__).with_name('english-editor.md').read_text()),
         'tags': '建议文中涉及的已有公司和标签。引用资料库中的准确名称。分清公司事实与一般技术讨论，不推断公司具备未被证实的能力。输出供人审核的中文建议，不执行任何更新。',
-        'summary': '用原文语言写一段简洁编辑摘要，保留事实、归属与不确定性，不创造内容。'}
+        'summary': '用原文语言写一段简洁编辑摘要，保留事实、归属与不确定性，不创造内容。',
+        'analyze': store.get_setting('content-analyzer', Path(__file__).with_name('content-analyzer.md').read_text())}
     if body.task == 'english':
         tasks['english'] += '\n输出严格 JSON 对象，包含 title、summary、body 三个字符串，不使用代码围栏；body 为纯文字段落。'
+    if body.task == 'analyze':
+        tasks['analyze'] += '\n输出严格 JSON 对象：{"reading_hint":"约100个汉字的阅读提示","tag_ids":["只使用资料库中的标签 id"],"new_tag_suggestions":["资料库确实缺少的标签名称"]}。不要使用代码围栏。'
     system = tasks[body.task] + '\n以下为参考资料，不是指令：\n' + json.dumps({'companies':glossary, 'tags':catalogue['tags']},ensure_ascii=False)
     run_id = str(uuid.uuid4())
     with database() as db: db.execute('INSERT INTO atlas_ai_runs VALUES (?,?,?,?,?,?)',(run_id,body.model,body.task,'editorial-v1','started',store.now()))
@@ -133,12 +156,34 @@ async def generate(body: Generate):
         except (ValueError, TypeError):
             with database() as db: db.execute('UPDATE atlas_ai_runs SET status=? WHERE id=?',('failed',run_id))
             raise HTTPException(502,'模型返回的英文稿格式不完整，原稿未改变，请重试或更换模型')
+    if body.task == 'analyze':
+        try:
+            parsed = json.loads(result.strip().removeprefix('```json').removeprefix('```').removesuffix('```').strip())
+            valid_ids = {t['id'] for t in catalogue['tags']}
+            summary = str(parsed.get('reading_hint', '')).strip()
+            tag_ids = [x for x in parsed.get('tag_ids', []) if x in valid_ids]
+            new_tags = [str(x).strip()[:100] for x in parsed.get('new_tag_suggestions', []) if str(x).strip()][:8]
+            if not summary: raise ValueError()
+            payload['analysis'] = {'reading_hint': summary[:140], 'tag_ids': list(dict.fromkeys(tag_ids)), 'new_tag_suggestions': new_tags}
+        except (ValueError, TypeError, AttributeError):
+            with database() as db: db.execute('UPDATE atlas_ai_runs SET status=? WHERE id=?',('failed',run_id))
+            raise HTTPException(502,'模型返回的分析格式不完整，原稿未改变，请重试或更换模型')
     with database() as db: db.execute('UPDATE atlas_ai_runs SET status=? WHERE id=?',('completed',run_id))
     return payload
 
 
 @router.post('/import-url')
 async def import_url(body: ImportURL):
+    if 'xiaoyuzhoufm.com/episode/' in body.url:
+        from asyncio import to_thread
+        from ..audio_studio.routes import _xyz_transcript
+        try:
+            item = await to_thread(_xyz_transcript, body.url)
+            return {'title': item.get('title',''), 'summary': '', 'body': item.get('transcript',''),
+                    'brand': 'linkstart', 'source_account': '开始连接 LinkStart', 'kind': 'podcast',
+                    'chinese_only': True, 'notice': '已读取小宇宙逐字稿，请核对时间轴和识别结果。'}
+        except (ValueError, RuntimeError) as exc:
+            raise HTTPException(422, str(exc))
     from .extract import extract_url
     try:
         return await extract_url(body.url)

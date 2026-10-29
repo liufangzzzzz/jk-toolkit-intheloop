@@ -1,6 +1,6 @@
 services:
   frontend:
-    image: ${ITL_REGISTRY:-hub.kce.ksyun.com/geekpark-hub}/frontend:${ITL_IMAGE_TAG:-latest}
+    image: ${ITL_REGISTRY:-ghcr.io/geekpark-hub/jk-toolkit-intheloop}/frontend:${ITL_IMAGE_TAG:-latest}
     # build: .
     restart: unless-stopped
     environment:
@@ -13,7 +13,7 @@ services:
         condition: service_healthy
 
   backend:
-    image: ${ITL_REGISTRY:-hub.kce.ksyun.com/geekpark-hub}/backend:${ITL_IMAGE_TAG:-latest}
+    image: ${ITL_REGISTRY:-ghcr.io/geekpark-hub/jk-toolkit-intheloop}/backend:${ITL_IMAGE_TAG:-latest}
     # build:
     #   context: .
     #   dockerfile: backend/Dockerfile
@@ -32,6 +32,9 @@ services:
       FEISHU_APP_SECRET: ${FEISHU_APP_SECRET:-}
       FEISHU_USER_ACCESS_TOKEN: ${FEISHU_USER_ACCESS_TOKEN:-}
       FEISHU_USER_REFRESH_TOKEN: ${FEISHU_USER_REFRESH_TOKEN:-}
+      FEISHU_OAUTH_REDIRECT_URI: ${FEISHU_OAUTH_REDIRECT_URI:-}
+      FEISHU_OAUTH_SCOPES: ${FEISHU_OAUTH_SCOPES:-offline_access docx:document drive:drive minutes:minutes.basic:read minutes:minutes.transcript:export}
+      NEXT_PUBLIC_SITE_ORIGIN: ${NEXT_PUBLIC_SITE_ORIGIN:-https://toolkit-intheloop.geekpark.net}
       FEISHU_API_BASE: ${FEISHU_API_BASE:-https://open.feishu.cn/open-apis}
       FEISHU_DOC_ORIGIN: ${FEISHU_DOC_ORIGIN:-https://geek.feishu.cn/docx}
       FEISHU_EXPORT_FOLDER_NAME: ${FEISHU_EXPORT_FOLDER_NAME:-沟通记录}
@@ -48,6 +51,10 @@ services:
       WECHAT_THUMB_MEDIA_ID: ${WECHAT_THUMB_MEDIA_ID:-}
       GEEKPARK_LOGIN_NAME: ${GEEKPARK_LOGIN_NAME:-}
       GEEKPARK_LOGIN_PASSWORD: ${GEEKPARK_LOGIN_PASSWORD:-}
+      GEEKPARK_ACCOUNT_NAME: ${GEEKPARK_ACCOUNT_NAME:-}
+      GEEKPARK_LOGIN_NAME_2: ${GEEKPARK_LOGIN_NAME_2:-}
+      GEEKPARK_LOGIN_PASSWORD_2: ${GEEKPARK_LOGIN_PASSWORD_2:-}
+      GEEKPARK_ACCOUNT_NAME_2: ${GEEKPARK_ACCOUNT_NAME_2:-第二个官网账号}
       WEBSITE_GEEKPARK_API_BASE: ${WEBSITE_GEEKPARK_API_BASE:-https://mainssl.geekpark.net}
       WEBSITE_GEEKPARK_ADMIN_BASE: ${WEBSITE_GEEKPARK_ADMIN_BASE:-https://admin.geekpark.net}
       WEBSITE_GEEKPARK_PUBLIC_BASE: ${WEBSITE_GEEKPARK_PUBLIC_BASE:-https://www.geekpark.net}

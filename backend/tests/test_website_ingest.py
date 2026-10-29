@@ -7,6 +7,7 @@ import zipfile
 
 import httpx
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import database as database_module
 from app.main import app
@@ -63,6 +64,142 @@ def test_word_parser_extracts_title_summary_and_tags(tmp_path, monkeypatch):
     assert "<h1" not in article.content_html
 
 
+def test_short_abstract_uses_complete_opening_sentences():
+    source = "第一句话说明文章的核心背景。第二句话补充必要事实。" + "很长的后续内容，" * 30
+    assert parser._short_abstract(source) == "第一句话说明文章的核心背景。第二句话补充必要事实。"
+    assert len(parser._short_abstract("没有句号的很长内容，" * 30)) <= 151
+
+
+def test_website_status_exposes_two_separate_env_accounts(monkeypatch):
+    monkeypatch.setenv("GEEKPARK_LOGIN_NAME", "first@example.com")
+    monkeypatch.setenv("GEEKPARK_LOGIN_PASSWORD", "first-secret")
+    monkeypatch.setenv("GEEKPARK_ACCOUNT_NAME", "主账号")
+    monkeypatch.setenv("GEEKPARK_LOGIN_NAME_2", "second@example.com")
+    monkeypatch.setenv("GEEKPARK_LOGIN_PASSWORD_2", "second-secret")
+    monkeypatch.setenv("GEEKPARK_ACCOUNT_NAME_2", "第二账号")
+    monkeypatch.setattr(publisher, "load_settings", lambda: {
+        "website": {"access_key": "key-1", "nickname": "作者一"},
+        "website_2": {"access_key": "key-2", "nickname": "作者二"},
+    })
+
+    status = publisher.connection_status("2")
+
+    assert status["account_id"] == "2"
+    assert status["nickname"] == "作者二"
+    assert status["connected"] is True
+    assert status["accounts"] == [
+        {"id": "default", "label": "主账号"},
+        {"id": "2", "label": "第二账号"},
+    ]
+
+
+def test_default_account_label_uses_connected_author_name(monkeypatch):
+    monkeypatch.setenv("GEEKPARK_LOGIN_NAME", "li@example.com")
+    monkeypatch.setenv("GEEKPARK_LOGIN_PASSWORD", "secret")
+    monkeypatch.setenv("GEEKPARK_ACCOUNT_NAME", "默认官网账号")
+    monkeypatch.delenv("GEEKPARK_LOGIN_NAME_2", raising=False)
+    monkeypatch.delenv("GEEKPARK_LOGIN_PASSWORD_2", raising=False)
+    monkeypatch.setattr(publisher, "load_settings", lambda: {
+        "website": {"access_key": "key", "nickname": "Li Yuan"},
+    })
+
+    status = publisher.connection_status()
+
+    assert status["account_label"] == "Li Yuan"
+    assert status["accounts"] == [{"id": "default", "label": "Li Yuan"}]
+
+
+def test_preview_streams_assets_instead_of_embedding_base64(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    reference = save_asset(b"jpeg-bytes", "image/jpeg")
+    article = WebsiteImportArticle(
+        title="测试",
+        abstract="摘要",
+        content_html=f'<p>正文</p><img src="{reference}">',
+        source_type="docx",
+        source_ref="test.docx",
+    )
+
+    preview = parser.render_preview(article)
+
+    assert "data:image" not in preview
+    assert reference in preview
+    assert f'/api/v1/website-import/assets/{reference.removeprefix("ingest-asset://")}' in preview
+
+
+def test_image_upload_accepts_nested_success_response(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    reference = save_asset(b"jpeg-bytes", "image/jpeg")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            202,
+            json={"data": {"image": {"image_url": "http://cdn.geekpark.net/image.jpg", "image_id": 42}}},
+            request=request,
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        publisher.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    image = asyncio.run(publisher._upload_image(reference, "access-key"))
+
+    assert image == {"url": "https://cdn.geekpark.net/image.jpg", "id": 42}
+
+
+def test_image_upload_uses_location_header_when_body_has_no_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    reference = save_asset(b"jpeg-bytes", "image/jpeg")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            201,
+            headers={"location": "http://cdn.geekpark.net/from-location.jpg"},
+            request=request,
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        publisher.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    image = asyncio.run(publisher._upload_image(reference, "access-key"))
+
+    assert image["url"] == "https://cdn.geekpark.net/from-location.jpg"
+
+
+def test_image_upload_compresses_and_retries_after_413(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path))
+    source = io.BytesIO()
+    Image.new("RGB", (80, 80), "purple").save(source, format="PNG")
+    reference = save_asset(source.getvalue(), "image/png")
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(request.content)
+        if len(attempts) == 1:
+            return httpx.Response(413, text="too large", request=request)
+        return httpx.Response(201, json={"image": {"url": "https://cdn.geekpark.net/retried.jpg"}}, request=request)
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        publisher.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler)),
+    )
+
+    image = asyncio.run(publisher._upload_image(reference, "access-key"))
+
+    assert len(attempts) == 2
+    assert b"image/jpeg" in attempts[1]
+    assert image["url"] == "https://cdn.geekpark.net/retried.jpg"
+
+
 def test_sanitizer_preserves_safe_colors_and_normalizes_heading_size():
     cleaned = parser.sanitize_fragment(
         '<h2 style="font-size:88px;color:#A583FF;background-color:rgb(250, 240, 255);position:fixed">标题</h2>'
@@ -77,7 +214,7 @@ def test_sanitizer_preserves_safe_colors_and_normalizes_heading_size():
     assert "javascript" not in cleaned
 
 
-def test_preview_embeds_local_images(tmp_path, monkeypatch):
+def test_preview_streams_local_images(tmp_path, monkeypatch):
     monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
     reference = save_asset(b"png-content", "image/png")
     article = WebsiteImportArticle(
@@ -88,7 +225,7 @@ def test_preview_embeds_local_images(tmp_path, monkeypatch):
 
     preview = parser.render_preview(article)
 
-    assert 'src="data:image/png;base64,' in preview
+    assert 'src="/api/v1/website-import/assets/' in preview
     assert f'data-asset-ref="{reference}"' in preview
     assert 'id="website-content"' in preview
 
@@ -143,6 +280,33 @@ def test_wechat_parser_localizes_images_and_removes_unsafe_markup(tmp_path, monk
     assert any("1 个视频模块" in warning for warning in article.warnings)
 
 
+def test_wechat_parser_recognizes_image_bytes_with_generic_content_type(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
+    page = '<h1 id="activity-name">图片测试</h1><section id="js_content"><img data-src="https://mmbiz.qpic.cn/body.jpg"></section>'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "mp.weixin.qq.com":
+            return httpx.Response(200, text=page, request=request)
+        return httpx.Response(
+            200,
+            content=b"\xff\xd8\xff" + b"jpeg-content",
+            headers={"content-type": "application/octet-stream"},
+            request=request,
+        )
+
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(
+        parser.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_client(transport=httpx.MockTransport(handler), follow_redirects=True),
+    )
+
+    article = asyncio.run(parser.parse_wechat_url("https://mp.weixin.qq.com/s/test"))
+
+    assert "ingest-asset://" in article.content_html
+    assert not article.image_issues
+
+
 def test_database_migrates_existing_publish_records(tmp_path, monkeypatch):
     path = tmp_path / "old.db"
     with sqlite3.connect(path) as connection:
@@ -192,8 +356,8 @@ def test_website_publish_contract_supports_direct_publish(tmp_path, monkeypatch)
     database_module._INITIALIZED_PATHS.discard(str((tmp_path / "publish.db").resolve()))
     captured = {}
 
-    async def fake_connect(*, force=False):
-        return {"connected": True, "fixed_credentials": True}
+    async def fake_connect(account_id="default", *, force=False):
+        return {"connected": True, "fixed_credentials": True, "account_id": account_id}
 
     async def fake_prepare(article, access_key):
         assert access_key == "test-access-key"
@@ -276,8 +440,8 @@ def test_word_publish_prefers_industry_news_column(tmp_path, monkeypatch):
     database_module._INITIALIZED_PATHS.discard(str((tmp_path / "industry.db").resolve()))
     captured = {}
 
-    async def fake_connect(*, force=False):
-        return {"connected": True, "fixed_credentials": True}
+    async def fake_connect(account_id="default", *, force=False):
+        return {"connected": True, "fixed_credentials": True, "account_id": account_id}
 
     async def fake_prepare(article, access_key):
         return "<p>正文</p>", {"url": "", "id": ""}, [], []

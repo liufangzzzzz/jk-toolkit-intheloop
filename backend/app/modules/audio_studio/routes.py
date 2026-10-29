@@ -6,12 +6,16 @@ import json
 import os
 import re
 import shutil
+import secrets
 import subprocess
 import tempfile
+import time
 from pathlib import Path
+from urllib.parse import quote, urlencode
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, Field
 
 from ...auth import require_auth
@@ -93,6 +97,35 @@ class ProjectInput(BaseModel):
     article_body: str = Field(default='', max_length=300000)
 
 
+def _feishu_oauth_redirect_uri(request: Request) -> str:
+    configured = os.environ.get('FEISHU_OAUTH_REDIRECT_URI', '').strip()
+    if configured:
+        return configured
+    origin = os.environ.get('NEXT_PUBLIC_SITE_ORIGIN', '').strip().rstrip('/')
+    if origin:
+        return origin + '/api/v1/audio-studio/feishu/callback'
+    return str(request.url_for('feishu_oauth_callback'))
+
+
+def _feishu_oauth_state() -> str:
+    state = secrets.token_urlsafe(32)
+    store.set_setting('feishu-oauth-state', json.dumps({'value': state, 'expires_at': int(time.time()) + 600}))
+    return state
+
+
+def _consume_feishu_oauth_state(candidate: str) -> bool:
+    try:
+        saved = json.loads(store.get_setting('feishu-oauth-state', '') or '{}')
+    except json.JSONDecodeError:
+        saved = {}
+    store.set_setting('feishu-oauth-state', '')
+    return bool(
+        candidate
+        and secrets.compare_digest(candidate, str(saved.get('value') or ''))
+        and int(saved.get('expires_at') or 0) >= int(time.time())
+    )
+
+
 def _skill(name: str) -> str:
     saved = store.get_setting('audio-skill-' + name, '').strip()
     if not saved:
@@ -115,6 +148,7 @@ def _feishu_user_configured() -> bool:
     return bool(
         os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
         or os.environ.get('FEISHU_USER_REFRESH_TOKEN', '').strip()
+        or store.get_setting('feishu-user-access-token', '').strip()
         or store.get_setting('feishu-user-refresh-token', '').strip()
     )
 
@@ -127,7 +161,10 @@ def _feishu_app_configured() -> bool:
 
 
 async def _feishu_user_token(client: httpx.AsyncClient) -> str:
-    direct = os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
+    direct = (
+        os.environ.get('FEISHU_USER_ACCESS_TOKEN', '').strip()
+        or store.get_setting('feishu-user-access-token', '').strip()
+    )
     refresh_token = store.get_setting('feishu-user-refresh-token', '').strip() or os.environ.get('FEISHU_USER_REFRESH_TOKEN', '').strip()
     app_id = os.environ.get('FEISHU_APP_ID', '').strip()
     app_secret = os.environ.get('FEISHU_APP_SECRET', '').strip()
@@ -189,10 +226,14 @@ def _ensure_feishu_success(response: httpx.Response, fallback: str) -> dict | No
 
 
 def _public_feishu_minute_sync(url: str) -> dict:
-    """Read only a publicly shared Minutes page; no saved browser session is used."""
+    """Read a public Minutes transcript through Feishu's anonymous web session."""
     from playwright.sync_api import sync_playwright
 
     timeout_ms = int(os.environ.get('FEISHU_PUBLIC_TIMEOUT_MS', '60000'))
+    match = _FEISHU_MINUTE.search(url)
+    if not match:
+        raise ValueError('妙记链接中没有识别到 minute token')
+    minute_token = match.group(1)
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(
             headless=True,
@@ -202,23 +243,89 @@ def _public_feishu_minute_sync(url: str) -> dict:
         page = context.new_page()
         try:
             page.goto(url, wait_until='domcontentloaded', timeout=timeout_ms)
-            page.wait_for_function(
-                """() => {
-                    const text = document.body?.innerText || '';
-                    return text.length >= 120 && /(^|\\s)\\d{1,2}:\\d{2}(\\s|$)/m.test(text);
-                }""",
-                timeout=timeout_ms,
-            )
-            text = page.locator('body').inner_text(timeout=timeout_ms).strip()
             title = page.title().strip()
+            api_root = url.split('/minutes/', 1)[0] + '/minutes/api'
+            common = f'object_token={minute_token}&language=zh_cn'
+            deadline = time.monotonic() + timeout_ms / 1000
+            paragraph_payload = None
+            last_error = '匿名会话尚未建立'
+            while time.monotonic() < deadline:
+                response = context.request.get(
+                    f'{api_root}/subtitles/paragraph-ids?page_size=10000&page_num=0&{common}',
+                    headers={'Referer': url},
+                    timeout=min(15000, timeout_ms),
+                )
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = {}
+                if response.ok and payload.get('code') == 0:
+                    paragraph_payload = payload
+                    break
+                last_error = str(payload.get('msg') or f'HTTP {response.status}')
+                page.wait_for_timeout(500)
+            if paragraph_payload is None:
+                raise ValueError(f'公开妙记匿名会话失败：{last_error}')
+
+            paragraphs = (paragraph_payload.get('data') or {}).get('list') or []
+            if not paragraphs:
+                raise ValueError('公开妙记没有返回逐字稿段落')
+            speaker_response = context.request.get(
+                f'{api_root}/speakers?size=10000&translate_lang=default&{common}',
+                headers={'Referer': url},
+                timeout=min(15000, timeout_ms),
+            )
+            speaker_payload = speaker_response.json() if speaker_response.ok else {}
+            speaker_data = speaker_payload.get('data') or {}
+            paragraph_to_speaker = speaker_data.get('paragraph_to_speaker') or {}
+            speaker_info = speaker_data.get('speaker_info_map') or {}
+
+            first_pid = str(paragraphs[0].get('pid') or '')
+            subtitle_response = context.request.get(
+                f'{api_root}/subtitles_v2?paragraph_id={first_pid}&size={len(paragraphs)}'
+                f'&translate_lang=default&is_fluent=false&filter_speaker=true&{common}',
+                headers={'Referer': url},
+                timeout=min(30000, timeout_ms),
+            )
+            subtitle_payload = subtitle_response.json() if subtitle_response.ok else {}
+            if subtitle_payload.get('code') != 0:
+                raise ValueError(str(subtitle_payload.get('msg') or '公开妙记字幕读取失败'))
+            transcript = _format_public_feishu_transcript(
+                (subtitle_payload.get('data') or {}).get('paragraphs') or [],
+                paragraph_to_speaker,
+                speaker_info,
+            )
         finally:
             context.close()
             browser.close()
-    compact = re.sub(r'\s+', '', text)
-    blocked_markers = ('登录飞书', '扫码登录', '无权限访问', '申请访问权限')
-    if len(compact) < 120 or any(marker in text for marker in blocked_markers):
+    if len(re.sub(r'\s+', '', transcript)) < 40:
         raise ValueError('该妙记没有开启互联网用户可阅读，或公开页没有返回逐字稿')
-    return {'title': title, 'transcript': text, 'source_kind': 'feishu', 'needs_ai': False}
+    return {'title': title, 'transcript': transcript, 'source_kind': 'feishu', 'needs_ai': False}
+
+
+def _format_public_feishu_transcript(
+    paragraphs: list[dict],
+    paragraph_to_speaker: dict,
+    speaker_info: dict,
+) -> str:
+    """Turn Feishu's public subtitle JSON into the untouched, timestamped tier."""
+    blocks: list[str] = []
+    for paragraph in paragraphs:
+        pid = str(paragraph.get('pid') or '')
+        pieces = []
+        for sentence in paragraph.get('sentences') or []:
+            pieces.extend(str(item.get('content') or '') for item in sentence.get('contents') or [])
+        content = ''.join(pieces).strip()
+        if not content:
+            continue
+        speaker_id = str(paragraph_to_speaker.get(pid) or '')
+        speaker = str((speaker_info.get(speaker_id) or {}).get('user_name') or '说话人').strip()
+        try:
+            timestamp = _timestamp(int(paragraph.get('start_time') or 0) / 1000)
+        except (TypeError, ValueError):
+            timestamp = '00:00'
+        blocks.append(f'{speaker} {timestamp}\n{content}')
+    return '\n\n'.join(blocks)
 
 
 async def _public_feishu_minute(url: str) -> dict:
@@ -308,7 +415,18 @@ def _xyz_transcript(url: str) -> dict:
         return None
     mid = media_id(detail)
     if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
-    text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
+    # Prefer timed captions for both the audio desk and the independent site.
+    # Older xyz builds only support plain output, so keep that as a fallback.
+    text = ''
+    for caption_format in ('vtt', 'srt'):
+        try:
+            timed = _run([exe, 'transcript', episode, '--media-id', mid, '--format', caption_format, '--text'])
+            text = _vtt_text(timed)
+            if text: break
+        except ValueError:
+            continue
+    if not text:
+        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
     return {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
 
 
@@ -418,16 +536,42 @@ async def _audio_model(model: str, purpose: str) -> None:
         raise HTTPException(422, f'这个模型不用于{label}，请重新选择')
 
 
-async def _chat(model: str, system: str, text: str, purpose: str = 'article') -> dict:
+async def _await_or_disconnect(request: Request | None, operation):
+    """Cancel an upstream AI request when the workbench user presses stop."""
+    task = asyncio.create_task(operation)
+    if request is None:
+        return await task
+    try:
+        while not task.done():
+            done, _pending = await asyncio.wait({task}, timeout=.25)
+            if done:
+                return task.result()
+            if await request.is_disconnected():
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                raise HTTPException(499, '本次解析已中止')
+        return task.result()
+    except BaseException:
+        if not task.done():
+            task.cancel()
+        raise
+
+
+async def _chat(model: str, system: str, text: str, purpose: str = 'article', request: Request | None = None) -> dict:
     await _audio_model(model, purpose)
     key, base, _provider = connection()
     if not key or not base: raise HTTPException(503, '尚未配置模型接口')
     try:
         async with httpx.AsyncClient(timeout=180) as client:
-            response = await client.post(base + '/chat/completions', headers={'Authorization': 'Bearer ' + key}, json={'model': model, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}]})
+            response = await _await_or_disconnect(request, client.post(base + '/chat/completions', headers={'Authorization': 'Bearer ' + key}, json={'model': model, 'messages': [{'role': 'system', 'content': system}, {'role': 'user', 'content': text}]}))
             response.raise_for_status()
             raw = response.json()['choices'][0]['message']['content']
         return json.loads(raw.strip().removeprefix('```json').removeprefix('```').removesuffix('```').strip())
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(502, '模型没有返回完整结果，原始文字仍然保留。') from exc
 
@@ -437,7 +581,7 @@ def skills(): return {name: _skill(name) for name in DEFAULT_SKILLS}
 
 
 @router.get('/status')
-def source_status():
+def source_status(request: Request):
     return {
         'feishu_app_configured': _feishu_app_configured(),
         'feishu_user_configured': _feishu_user_configured(),
@@ -445,7 +589,76 @@ def source_status():
         'youtube_ready': bool(_executable('yt-dlp', 'YTDLP_BIN')),
         'xiaoyuzhou_ready': bool(_executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')),
         'feishu_export_folder': os.environ.get('FEISHU_EXPORT_FOLDER_NAME', '沟通记录').strip() or '沟通记录',
+        'feishu_oauth_available': _feishu_app_configured(),
+        'feishu_oauth_redirect_uri': _feishu_oauth_redirect_uri(request) if _feishu_app_configured() else '',
     }
+
+
+@router.get('/feishu/connect')
+def connect_feishu_user(request: Request):
+    app_id = os.environ.get('FEISHU_APP_ID', '').strip()
+    if not app_id or not os.environ.get('FEISHU_APP_SECRET', '').strip():
+        raise HTTPException(503, '请先配置飞书应用 App ID 与 App Secret。')
+    redirect_uri = _feishu_oauth_redirect_uri(request)
+    scopes = os.environ.get(
+        'FEISHU_OAUTH_SCOPES',
+        'offline_access docx:document drive:drive '
+        'minutes:minutes.basic:read minutes:minutes.transcript:export',
+    ).strip()
+    query = urlencode({
+        'app_id': app_id,
+        'redirect_uri': redirect_uri,
+        'state': _feishu_oauth_state(),
+        'scope': scopes,
+    })
+    return {
+        'authorize_url': 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + query,
+        'redirect_uri': redirect_uri,
+    }
+
+
+@router.get('/feishu/callback', name='feishu_oauth_callback')
+async def feishu_oauth_callback(request: Request, code: str = '', state: str = '', error: str = ''):
+    origin = os.environ.get('NEXT_PUBLIC_SITE_ORIGIN', '').strip().rstrip('/') or str(request.base_url).rstrip('/')
+    destination = origin + '/ops/audio'
+    if error:
+        return RedirectResponse(destination + '?feishu=error&message=' + quote(error[:160]))
+    if not code or not _consume_feishu_oauth_state(state):
+        return RedirectResponse(destination + '?feishu=error&message=' + quote('飞书授权链接无效或已经过期，请重新连接'))
+    app_id = os.environ.get('FEISHU_APP_ID', '').strip()
+    app_secret = os.environ.get('FEISHU_APP_SECRET', '').strip()
+    redirect_uri = _feishu_oauth_redirect_uri(request)
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            response = await client.post(
+                os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/') + '/authen/v2/oauth/token',
+                json={
+                    'grant_type': 'authorization_code',
+                    'client_id': app_id,
+                    'client_secret': app_secret,
+                    'code': code,
+                    'redirect_uri': redirect_uri,
+                },
+            )
+            payload = _ensure_feishu_success(response, '飞书用户授权失败') or {}
+        data = payload.get('data') or {}
+        access_token = str(payload.get('access_token') or data.get('access_token') or '').strip()
+        refresh_token = str(payload.get('refresh_token') or data.get('refresh_token') or '').strip()
+        granted_scope = str(payload.get('scope') or data.get('scope') or '').strip()
+        if not access_token:
+            raise ValueError('飞书没有返回用户 access token')
+        store.set_setting('feishu-user-access-token', access_token)
+        store.set_setting('feishu-user-scope', granted_scope)
+        if refresh_token:
+            store.set_setting('feishu-user-refresh-token', refresh_token)
+            return RedirectResponse(destination + '?feishu=connected')
+        return RedirectResponse(
+            destination + '?feishu=connected&message=' + quote(
+                '用户身份已连接，但飞书没有返回长期授权；请确认应用已开通 offline_access 并发布新版本'
+            )
+        )
+    except Exception as exc:
+        return RedirectResponse(destination + '?feishu=error&message=' + quote(str(exc)[:160]))
 
 
 @router.put('/skills')
@@ -505,7 +718,7 @@ async def import_link(body: UrlInput):
 
 
 @router.post('/import-file')
-async def import_file(file: UploadFile = File(...), model: str = Form('')):
+async def import_file(request: Request, file: UploadFile = File(...), model: str = Form('')):
     name = file.filename or 'audio'
     ext = Path(name).suffix.lower()
     raw = await file.read(_MAX_BYTES + 1)
@@ -523,23 +736,25 @@ async def import_file(file: UploadFile = File(...), model: str = Form('')):
     key, base, _provider = connection()
     try:
         async with httpx.AsyncClient(timeout=600) as client:
-            response = await client.post(base + '/audio/transcriptions', headers={'Authorization': 'Bearer ' + key}, data={'model': model}, files={'file': (name, raw, file.content_type or 'application/octet-stream')})
+            response = await _await_or_disconnect(request, client.post(base + '/audio/transcriptions', headers={'Authorization': 'Bearer ' + key}, data={'model': model}, files={'file': (name, raw, file.content_type or 'application/octet-stream')}))
             response.raise_for_status()
             transcript = response.json().get('text', '')
         if not transcript: raise ValueError()
         return {'title': Path(name).stem, 'transcript': transcript, 'source_kind': 'audio', 'needs_ai': False}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(502, '所选模型未能完成音频识别。请换用支持音频转写的模型，原文件未保存。') from exc
 
 
 @router.post('/process')
-async def process(body: ProcessInput):
+async def process(body: ProcessInput, request: Request):
     source = f"标题：{body.title}\n\n逐字稿：\n{body.transcript}"
-    cleaned = await _chat(body.model, _skill('clean'), source, 'processing')
+    cleaned = await _chat(body.model, _skill('clean'), source, 'processing', request)
     clean_text = str(cleaned.get('cleaned', '')).strip()
     if not clean_text: raise HTTPException(502, '清洗结果不完整，原始文字仍然保留。')
     simple_source = f"标题：{body.title}\n\n原始逐字稿（用于恢复时间轴和细节）：\n{body.transcript}\n\n中文可读版（事实底稿）：\n{clean_text}"
-    simple = await _chat(body.model, _skill('simple'), simple_source, 'processing')
+    simple = await _chat(body.model, _skill('simple'), simple_source, 'processing', request)
     return {'cleaned': clean_text, 'simple': str(simple.get('simple', '')).strip(), 'uncertain': cleaned.get('uncertain', [])}
 
 
@@ -562,6 +777,9 @@ async def export_feishu(body: FeishuExportInput):
     api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
     try:
         async with httpx.AsyncClient(timeout=60) as client:
+            # Use the same Feishu application's user identity. This is a
+            # user_access_token granted through the robot/app OAuth flow, not a
+            # tenant_access_token and not browser-session scraping.
             token = await _feishu_user_token(client)
             headers = {'Authorization': 'Bearer ' + token}
             folder_name = os.environ.get('FEISHU_EXPORT_FOLDER_NAME', '沟通记录').strip() or '沟通记录'
@@ -572,7 +790,7 @@ async def export_feishu(body: FeishuExportInput):
                     headers=headers,
                     params={'folder_token': '', 'page_size': 200},
                 )
-                list_payload = _ensure_feishu_success(list_response, '读取云盘文件夹失败') or {}
+                list_payload = _ensure_feishu_success(list_response, '读取用户云盘文件夹失败') or {}
                 matches = [
                     item for item in ((list_payload.get('data') or {}).get('files') or [])
                     if str(item.get('type') or '').lower() == 'folder'
@@ -581,12 +799,12 @@ async def export_feishu(body: FeishuExportInput):
                 ]
                 if not matches:
                     raise ValueError(
-                        f'没有在你的飞书云盘根目录找到“{folder_name}”文件夹。'
-                        '请确认用户授权包含云盘读取权限，或在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN'
+                        f'没有在当前授权用户的飞书云盘根目录找到“{folder_name}”文件夹。'
+                        '如果文件夹不在根目录，请在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN'
                     )
                 if len(matches) > 1:
                     raise ValueError(
-                        f'你的飞书云盘根目录有多个“{folder_name}”文件夹。'
+                        f'当前授权用户的云盘根目录有多个“{folder_name}”文件夹。'
                         '请在服务器 env 填写 FEISHU_EXPORT_FOLDER_TOKEN，避免导出到错误位置'
                     )
                 folder_token = str(matches[0]['token']).strip()
@@ -611,7 +829,7 @@ async def export_feishu(body: FeishuExportInput):
         return {'url': origin + '/' + document_id, 'document_id': document_id, 'folder_name': folder_name}
     except HTTPException: raise
     except Exception as exc:
-        raise HTTPException(502, f'飞书文档创建失败：{str(exc)[:320]}。请检查用户授权、云盘读取权限与 docx:document 权限。') from exc
+        raise HTTPException(502, f'飞书文档创建失败：{str(exc)[:320]}。请检查机器人应用的用户身份授权，以及 drive:drive 与 docx:document 用户权限。') from exc
 
 
 @router.post('/article')

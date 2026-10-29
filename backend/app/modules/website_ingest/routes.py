@@ -30,14 +30,14 @@ def _require_agent_key(x_agent_key: str = Header("", alias="X-Agent-Key")) -> No
 
 
 @router.get("/status")
-async def status() -> dict:
-    return connection_status()
+async def status(account_id: str = Query("default")) -> dict:
+    return connection_status(account_id)
 
 
 @router.post("/connect")
-async def connect() -> dict:
+async def connect(account_id: str = Query("default")) -> dict:
     try:
-        return await connect_fixed_account(force=True)
+        return await connect_fixed_account(account_id, force=True)
     except Exception as exc:
         raise HTTPException(status_code=400, detail={"message": str(exc)[:300]}) from exc
 
@@ -80,6 +80,7 @@ async def publish(body: WebsitePublishRequest) -> dict:
             mode=body.mode,
             column_id=body.column_id,
             request_id=body.request_id,
+            account_id=body.account_id,
         )
     except Exception as exc:
         action = "发布" if body.mode == "publish" else "创建草稿"

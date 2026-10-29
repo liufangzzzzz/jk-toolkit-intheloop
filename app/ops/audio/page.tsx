@@ -8,7 +8,7 @@ type SourceMode = 'link' | 'text' | 'file';
 type Tier = 'transcript' | 'cleaned' | 'simple';
 type Model = { id: string; name: string; tasks?: string[]; recommended?: boolean };
 type Skills = { clean: string; simple: string; article: string };
-type SourceStatus = { feishu_app_configured: boolean; feishu_user_configured: boolean; skills_configured: boolean; feishu_export_folder?: string };
+type SourceStatus = { feishu_app_configured: boolean; feishu_user_configured: boolean; skills_configured: boolean; feishu_export_folder?: string; feishu_oauth_available?: boolean; feishu_oauth_redirect_uri?: string };
 type Project = {
   id?: string; revision: number; title: string; source_url: string; source_kind: string;
   transcript: string; cleaned: string; simple: string; article_title: string;
@@ -51,6 +51,7 @@ export default function AudioStudio() {
   const [workspaceRestored, setWorkspaceRestored] = useState(false);
   const tierAreas = useRef<Partial<Record<Tier, HTMLTextAreaElement | null>>>({});
   const syncingScroll = useRef(false);
+  const parseAbort = useRef<AbortController | null>(null);
   const [busy, setBusy] = useState('');
   const [notice, setNotice] = useState('');
   const [error, setError] = useState('');
@@ -68,6 +69,10 @@ export default function AudioStudio() {
     setModelNotice(modelResult.notice || (!modelResult.configured ? '请先在服务器环境变量中配置模型接口。' : ''));
     setSkills(skillResult);
     setSourceStatus(statusResult);
+    const query = new URLSearchParams(window.location.search);
+    if (query.get('feishu') === 'connected') setNotice(query.get('message') || '飞书用户身份已连接，私有妙记读取和文档导出现在可以使用。');
+    if (query.get('feishu') === 'error') setError(query.get('message') || '飞书用户授权没有完成，请重试。');
+    if (query.has('feishu')) window.history.replaceState({}, '', '/ops/audio');
   }, []);
 
   useEffect(() => {
@@ -133,22 +138,40 @@ export default function AudioStudio() {
     finally { setBusy(''); }
   }
 
-  async function deriveTexts(title: string, transcript: string) {
+  async function runParsing(name: string, task: (signal: AbortSignal) => Promise<void>) {
+    if (busy) return;
+    const controller = new AbortController();
+    parseAbort.current = controller;
+    setBusy(name); setNotice(''); setError('');
+    try {
+      await task(controller.signal);
+    } catch (failure) {
+      if (controller.signal.aborted) setNotice('已中止本次解析，已有内容保持不变。');
+      else setError(failure instanceof Error ? failure.message : '操作失败');
+    } finally {
+      if (parseAbort.current === controller) parseAbort.current = null;
+      setBusy('');
+    }
+  }
+
+  function stopParsing() { parseAbort.current?.abort(); }
+
+  async function deriveTexts(title: string, transcript: string, signal?: AbortSignal) {
     if (!selectedProcessingModel) throw new Error('请先选择本次解析使用的模型。');
     return api<{ cleaned: string; simple: string }>('/audio-studio/process', {
-      method: 'POST', body: JSON.stringify({ model: selectedProcessingModel, title, transcript }),
+      method: 'POST', body: JSON.stringify({ model: selectedProcessingModel, title, transcript }), signal,
     });
   }
 
   async function importLink() {
     if (!sourceUrl.trim()) return;
     if (!selectedProcessingModel) { setError('请先选择模型；一次解析会直接生成原版、清洗版和简版。'); return; }
-    await run('import', async () => {
+    await runParsing('import', async (signal) => {
       const result = await api<{ title: string; transcript: string; source_kind: string; needs_ai: boolean }>('/audio-studio/import-url', {
-        method: 'POST', body: JSON.stringify({ url: sourceUrl.trim() }),
+        method: 'POST', body: JSON.stringify({ url: sourceUrl.trim() }), signal,
       });
       const title = result.title || project.title;
-      const derived = await deriveTexts(title, result.transcript);
+      const derived = await deriveTexts(title, result.transcript, signal);
       update({ title, source_url: sourceUrl.trim(), source_kind: result.source_kind, transcript: result.transcript, ...derived });
       setVisibleTiers(['transcript', 'cleaned']);
       setNotice('原版、清洗版和简版已全部生成。可选择单独查看，或并列查看其中两份。');
@@ -158,9 +181,9 @@ export default function AudioStudio() {
   async function usePastedText() {
     if (!pastedText.trim()) return;
     if (!selectedProcessingModel) { setError('请先选择模型；一次解析会直接生成原版、清洗版和简版。'); return; }
-    await run('import', async () => {
+    await runParsing('import', async (signal) => {
       const transcript = pastedText.trim();
-      const derived = await deriveTexts(project.title, transcript);
+      const derived = await deriveTexts(project.title, transcript, signal);
       update({ source_kind: 'text', transcript, ...derived }); setVisibleTiers(['transcript', 'cleaned']);
       setNotice('原版、清洗版和简版已全部生成。可选择单独查看，或并列查看其中两份。');
     });
@@ -171,12 +194,12 @@ export default function AudioStudio() {
     if (!selectedProcessingModel) { setError('请先选择模型；文件读取后会直接生成原版、清洗版和简版。'); return; }
     const needsAi = isAudio(file);
     if (needsAi && !selectedProcessingModel) { setError('这份音视频需要 AI 识别。请先明确选择模型，再点击开始识别。'); return; }
-    await run(needsAi ? 'transcribe' : 'import', async () => {
+    await runParsing(needsAi ? 'transcribe' : 'import', async (signal) => {
       const form = new FormData(); form.set('file', file); if (needsAi) form.set('model', selectedProcessingModel);
-      const result = await api<{ title: string; transcript: string; source_kind: string; needs_ai: boolean; notice?: string }>('/audio-studio/import-file', { method: 'POST', body: form });
+      const result = await api<{ title: string; transcript: string; source_kind: string; needs_ai: boolean; notice?: string }>('/audio-studio/import-file', { method: 'POST', body: form, signal });
       if (result.needs_ai) { setNotice(result.notice || '需要使用 AI 识别。'); return; }
       const title = result.title || project.title;
-      const derived = await deriveTexts(title, result.transcript);
+      const derived = await deriveTexts(title, result.transcript, signal);
       update({ title, source_kind: result.source_kind, transcript: result.transcript, ...derived }); setVisibleTiers(['transcript', 'cleaned']);
       setNotice(needsAi ? `已使用 ${models.find((item) => item.id === selectedProcessingModel)?.name || selectedProcessingModel} 完成识别，并生成三个档位。` : '已读取文件，并生成原版、清洗版和简版。');
     });
@@ -185,9 +208,9 @@ export default function AudioStudio() {
   async function processTranscript() {
     if (!selectedProcessingModel) { setError('请先选择本次使用的模型。'); return; }
     if (!project.transcript.trim()) { setError('请先导入或粘贴原始文字。'); return; }
-    await run('process', async () => {
+    await runParsing('process', async (signal) => {
       const result = await api<{ cleaned: string; simple: string }>('/audio-studio/process', {
-        method: 'POST', body: JSON.stringify({ model: selectedProcessingModel, title: project.title, transcript: project.transcript }),
+        method: 'POST', body: JSON.stringify({ model: selectedProcessingModel, title: project.title, transcript: project.transcript }), signal,
       });
       update({ cleaned: result.cleaned, simple: result.simple }); setVisibleTiers(['transcript', 'cleaned']);
       setNotice('两份文本已生成。不确定片段已用颜色标出，请逐项核对。');
@@ -252,11 +275,18 @@ export default function AudioStudio() {
   }
 
   async function exportFeishu(label: string, value: string) {
-    if (!sourceStatus.feishu_user_configured) { setError('请先在 env 中配置飞书用户授权；导出文档必须以你的用户身份创建。'); return; }
+    if (!sourceStatus.feishu_user_configured) { setError('请先连接机器人应用的用户身份；文档将以该用户身份创建。'); return; }
     await run('feishu', async () => {
       const result = await api<{ url: string; folder_name?: string }>('/audio-studio/export-feishu', { method: 'POST', body: JSON.stringify({ title: `${project.title || '音频整理'} · ${label}`, content: value }) });
       window.open(result.url, '_blank', 'noopener,noreferrer');
       setNotice(`飞书文档已创建到“${result.folder_name || sourceStatus.feishu_export_folder || '沟通记录'}”。`);
+    });
+  }
+
+  async function connectFeishu() {
+    await run('feishu-connect', async () => {
+      const result = await api<{ authorize_url: string }>('/audio-studio/feishu/connect');
+      window.location.assign(result.authorize_url);
     });
   }
 
@@ -286,7 +316,7 @@ export default function AudioStudio() {
       <header className="workspace-title"><div><p className="eyebrow">IN THE LOOP / AUDIO DESK</p><h1>音频整理</h1></div><p>优先读取现成 transcript。只有确实需要识别或生成时，才使用你明确选择的模型。</p></header>
       <div className="connection-cards" aria-label="必要配置">
         <div className={models.length ? 'ready' : 'pending'}><span>AI</span><strong>{models.length ? 'AI API 已配置' : 'AI API 未配置'}</strong><small>{models.length ? `${models.length} 个指定模型可选，每次由你决定` : '请在服务器 env 配置 Modelink API Key'}</small></div>
-        <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '飞书用户身份已连接' : '飞书用户身份未配置'}</strong><small>{sourceStatus.feishu_user_configured ? `公开读取失败时，以你的飞书身份读取；文档导出到“${sourceStatus.feishu_export_folder || '沟通记录'}”` : sourceStatus.feishu_app_configured ? '应用参数已就绪；还需用户授权，妙记不会使用机器人身份' : '请配置飞书应用参数与用户授权'}</small></div>
+        <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '机器人应用的用户身份已连接' : '机器人应用的用户身份未连接'}</strong><small>{sourceStatus.feishu_user_configured ? `私有妙记与文档导出使用该用户身份；导出到“${sourceStatus.feishu_export_folder || '沟通记录'}”` : sourceStatus.feishu_app_configured ? '连接后可读取私有妙记并以用户身份导出文档' : '请先在服务器 env 配置机器人 App ID 与 App Secret'}</small>{!sourceStatus.feishu_user_configured && sourceStatus.feishu_oauth_available && <button onClick={connectFeishu} disabled={busy !== ''}>{busy === 'feishu-connect' ? '连接中' : '连接机器人用户身份'} →</button>}</div>
         <div className={sourceStatus.skills_configured ? 'ready' : 'initial'}><span>SK</span><strong>{sourceStatus.skills_configured ? '生成规则已配置' : '正在使用初始规则'}</strong><small>清洗、简版与稿件规则可以随时修改</small><button onClick={() => setRulesOpen(true)}>{sourceStatus.skills_configured ? '修改' : '配置'} →</button></div>
       </div>
       {(notice || error || modelNotice) && <div className={`operation-notice audio-page-notice ${error ? 'error' : 'success'}`} role="status">{error || notice || modelNotice}</div>}
@@ -300,6 +330,7 @@ export default function AudioStudio() {
           {sourceMode === 'file' && <div className="source-box"><label className="file-pick">选择音频、视频、字幕、TXT、Markdown 或 Word<input type="file" accept="audio/*,video/mp4,video/quicktime,.txt,.md,.srt,.vtt,.doc,.docx" onChange={(e: ChangeEvent<HTMLInputElement>) => setFile(e.target.files?.[0] || null)} /><strong>{file ? file.name : '选择文件'}</strong></label>{isAudio(file) && <div className="ai-consent"><b>音视频需要先用 AI 识别</b><span>点击后依次完成识别、清洗和简版。</span></div>}<button className="primary-button full" disabled={!file || busy !== '' || !selectedProcessingModel} onClick={importFile}>{busy === 'transcribe' ? 'AI 识别中…' : busy === 'import' ? '解析中…' : '解析为三个档位'}</button></div>}
           <label>本次解析模型<select value={selectedProcessingModel} onChange={(e) => setModel(e.target.value)}><option value="">选择模型后开始</option>{processingModels.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label>
           <button className="secondary-button full" disabled={!project.transcript || !selectedProcessingModel || busy !== ''} onClick={processTranscript}>{busy === 'process' ? '重新生成中…' : '重新生成清洗版与简版'}</button>
+          {['import', 'transcribe', 'process'].includes(busy) && <button className="stop-button full" onClick={stopParsing}>中止当前解析</button>}
         </aside>
 
         <section className="audio-editor-panel">

@@ -14,16 +14,19 @@ async function proxy(request: NextRequest, context: RouteContext) {
   headers.set('accept-encoding', 'identity');
 
   try {
-    const body = request.method === 'GET' || request.method === 'HEAD'
-      ? undefined
-      : await request.arrayBuffer();
-
-    const response = await fetch(target, {
+    const hasBody = request.method !== 'GET' && request.method !== 'HEAD';
+    // Forward uploads as a stream. Buffering the whole Word file here meant an
+    // overseas upload had to finish one complete hop before backend parsing even
+    // started, leaving the UI apparently spinning forever.
+    const init: RequestInit & { duplex?: 'half' } = {
       method: request.method,
       headers,
-      body,
+      body: hasBody ? request.body : undefined,
+      signal: request.signal,
       redirect: 'manual',
-    });
+    };
+    if (hasBody) init.duplex = 'half';
+    const response = await fetch(target, init);
     return await forwardResponse(response);
   } catch {
     return Response.json(

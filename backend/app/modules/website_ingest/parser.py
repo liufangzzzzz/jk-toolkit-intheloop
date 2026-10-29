@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
 import io
 import re
 import shutil
@@ -21,7 +20,7 @@ from .models import WebsiteImageIssue, WebsiteImportArticle
 from .tags import suggest_tags
 
 _MAX_DOCUMENT_BYTES = 60 * 1024 * 1024
-_MAX_IMAGE_BYTES = 15 * 1024 * 1024
+_MAX_IMAGE_BYTES = 30 * 1024 * 1024
 _WECHAT_HOSTS = {"mp.weixin.qq.com"}
 _ALLOWED_TAGS = {
     "p", "h1", "h2", "h3", "h4", "h5", "h6", "strong", "b", "em", "i", "u", "s",
@@ -39,6 +38,32 @@ _SAFE_STYLE_PROPERTIES = {
 _FORBIDDEN_STYLE_VALUE = re.compile(r"(?:url\s*\(|expression\s*\(|javascript:|@import|var\s*\()", re.I)
 def _plain_text(value: str) -> str:
     return re.sub(r"\s+", " ", BeautifulSoup(value or "", "html.parser").get_text(" ", strip=True)).strip()
+
+
+def _short_abstract(value: str, *, limit: int = 150) -> str:
+    """Keep the opening thought, ending at a natural Chinese/English boundary."""
+    text = re.sub(r"\s+", " ", value or "").strip()
+    if len(text) <= limit:
+        return text
+    sentences = re.split(r"(?<=[。！？!?])\s*|(?<=[.])\s+(?=[A-Z0-9\u4e00-\u9fff])", text)
+    selected = ""
+    for sentence in sentences:
+        sentence = sentence.strip()
+        if not sentence:
+            continue
+        if selected and len(selected) + len(sentence) > limit:
+            break
+        selected += sentence
+        if len(selected) >= 70:
+            break
+    if selected and len(selected) <= limit:
+        return selected
+    opening = text[:limit + 1]
+    boundary = max(opening.rfind(mark) for mark in "。！？!?；;，,")
+    if boundary >= 60:
+        return opening[:boundary + 1].strip()
+    space = opening.rfind(" ")
+    return opening[:space if space >= 60 else limit].rstrip("，,；; ") + "。"
 
 
 def _safe_http_url(raw: str, *, base_url: str = "") -> str:
@@ -108,8 +133,21 @@ async def _download_image(client: httpx.AsyncClient, url: str) -> tuple[str, str
         response.raise_for_status()
         raw = response.content
         content_type = response.headers.get("content-type", "").split(";", 1)[0].lower()
-        if not content_type.startswith("image/") or not raw or len(raw) > _MAX_IMAGE_BYTES:
-            return url, "", "返回内容不是有效图片，或图片超过 15MB"
+        if not content_type.startswith("image/"):
+            if raw.startswith(b"\xff\xd8\xff"):
+                content_type = "image/jpeg"
+            elif raw.startswith(b"\x89PNG\r\n\x1a\n"):
+                content_type = "image/png"
+            elif raw.startswith((b"GIF87a", b"GIF89a")):
+                content_type = "image/gif"
+            elif raw.startswith(b"RIFF") and len(raw) >= 12 and raw[8:12] == b"WEBP":
+                content_type = "image/webp"
+        if not raw:
+            return url, "", "图片返回内容为空"
+        if not content_type.startswith("image/"):
+            return url, "", "图片地址返回的不是图片内容"
+        if len(raw) > _MAX_IMAGE_BYTES:
+            return url, "", "图片原文件超过 30MB"
         return url, save_asset(raw, content_type, suffix=urlparse(url).path), ""
     except Exception as exc:
         return url, "", str(exc)[:160] or "图片下载失败"
@@ -178,15 +216,14 @@ async def parse_wechat_url(source_url: str) -> WebsiteImportArticle:
     if video_count:
         warnings.append(f"检测到 {video_count} 个视频模块，官网同步暂不自动上传视频")
     cleaned = sanitize_fragment(str(content))
-    if not abstract:
-        abstract = _plain_text(cleaned)[:150]
+    abstract = _short_abstract(abstract or _plain_text(cleaned))
     if not cover_asset:
         first_image = BeautifulSoup(cleaned, "html.parser").find("img")
         cover_asset = str(first_image.get("src") or "") if first_image else ""
     tags = suggest_tags(title, abstract, cleaned)
     return WebsiteImportArticle(
         title=title,
-        abstract=abstract[:500],
+        abstract=abstract,
         content_html=cleaned,
         tags=tags,
         cover_asset=cover_asset,
@@ -290,7 +327,7 @@ def parse_word_file(raw: bytes, filename: str) -> WebsiteImportArticle:
         heading.decompose()
     _normalize_compact_heading_images(soup, dimensions)
     cleaned = sanitize_fragment(str(soup))
-    abstract = _plain_text(cleaned)[:150]
+    abstract = _short_abstract(_plain_text(cleaned))
     warnings = [str(message.message) for message in result.messages if getattr(message, "message", "")]
     tags = suggest_tags(title, abstract, cleaned)
     return WebsiteImportArticle(
@@ -311,12 +348,15 @@ def render_preview(article: WebsiteImportArticle) -> str:
         reference = str(image.get("src") or "")
         if not reference.startswith("ingest-asset://"):
             continue
-        asset = read_asset(reference)
-        if not asset:
+        token = reference.removeprefix("ingest-asset://").strip()
+        if not token or not read_asset(reference):
             continue
-        raw, _filename, content_type = asset
         image["data-asset-ref"] = reference
-        image["src"] = f"data:{content_type};base64,{base64.b64encode(raw).decode('ascii')}"
+        # Keep the parse response small. Embedding every image as base64 made image-heavy
+        # Word files produce very large JSON responses, which were prone to truncation on
+        # slower/international connections. The authenticated asset route streams each
+        # preview image independently instead.
+        image["src"] = f"/api/v1/website-import/assets/{token}"
     content = str(soup)
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'

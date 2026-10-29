@@ -1,9 +1,10 @@
-from datetime import date
 from typing import Literal
+from datetime import date as calendar_date
 from urllib.parse import urlparse
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 Locale = Literal['zh', 'en']
+Visibility = Literal['public', 'internal']
 
 class Base(BaseModel):
     revision: int = 0
@@ -41,19 +42,43 @@ class Company(Base):
     @classmethod
     def url(cls, value): return valid_url(value)
 
+class Affiliation(BaseModel):
+    company_id: str
+    relationship: Literal['employment','founder','advisor','board','other'] = 'employment'
+    is_primary: bool = True
+    title_zh: str = ''
+    title_en: str = ''
+    start_date: str = ''
+    end_date: str = ''
+
 class Tag(Base):
-    tag_type: Literal["topic","company","product"] = "topic"
+    tag_type: Literal["content_type","entity","technical_topic","topic","company","product"] = "technical_topic"
+    entity_kind: Literal["company","product","person"] | None = None
+    visibility: Visibility = 'public'
+    affiliations: list[Affiliation] = Field(default_factory=list)
     map_level: Literal["primary","medium","secondary"] = "secondary"
     aliases: list[str] = Field(default_factory=list)
     website: str = ""
+    announced_date: str = Field(default='', pattern=r'^(?:\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?)?$')
+    released_date: str = Field(default='', pattern=r'^(?:\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?)?$')
+    ended_date: str = Field(default='', pattern=r'^(?:\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?)?$')
 
     @field_validator("website")
     @classmethod
     def check_website(cls, value): return valid_url(value)
 
+    @field_validator('announced_date','released_date','ended_date')
+    @classmethod
+    def valid_product_date(cls, value):
+        if len(value) == 10:
+            try: calendar_date.fromisoformat(value)
+            except ValueError as exc: raise ValueError('产品时间不是有效日期') from exc
+        return value
+
     map_visible: bool = True
     parent_ids: list[str] = Field(default_factory=list)
     related_tag_ids: list[str] = Field(default_factory=list)
+    featured_content_ids: list[str] = Field(default_factory=list)
     slug: str = Field(pattern=r'^[a-z0-9]+(?:-[a-z0-9]+)*$', max_length=100)
     name_zh: str = Field(min_length=1, max_length=100)
     name_en: str = ''
@@ -89,6 +114,7 @@ class ImportURL(BaseModel):
 class Version(BaseModel):
     title: str = Field(default='', max_length=250)
     summary: str = ''
+    reading_hint: str = ''
     body: str = ''
     destination: Literal['hosted','external'] = 'hosted'
     external_url: str = ''
@@ -114,22 +140,33 @@ class Content(Base):
         return value
 
     chinese_only: bool = False
+    visibility: Visibility = 'public'
     brand: Literal["geekpark","intheloop","linkstart"] = "intheloop"
     resources: list[Companion] = Field(default_factory=list)
     kind: Literal['article','podcast','link'] = 'article'
     section: Literal['reporting','overseas'] = 'reporting'
     source_url: str = ''
-    date: date
+    date: str = Field(pattern=r'^\d{4}(?:-(?:0[1-9]|1[0-2])(?:-(?:0[1-9]|[12]\d|3[01]))?)?$')
     audio_language: Locale = 'zh'
     guests: str = ''
     duration: str = ''
     company_ids: list[str] = Field(default_factory=list)
     tag_ids: list[str] = Field(default_factory=list)
+    ai_recommended_tag_ids: list[str] = Field(default_factory=list)
+    ai_suggested_tags: list[str] = Field(default_factory=list)
     versions: dict[Locale, Version]
 
     @field_validator('source_url')
     @classmethod
     def url(cls, value): return valid_url(value)
+
+    @field_validator('date')
+    @classmethod
+    def valid_partial_date(cls, value):
+        if len(value) == 10:
+            try: calendar_date.fromisoformat(value)
+            except ValueError as exc: raise ValueError('发布日期不是有效日期') from exc
+        return value
 
 class Publication(BaseModel):
     locale: Locale
@@ -137,5 +174,5 @@ class Publication(BaseModel):
 
 class Generate(BaseModel):
     model: str = Field(min_length=1)
-    task: Literal['english','tags','summary']
+    task: Literal['english','tags','summary','analyze']
     text: str = Field(min_length=1, max_length=60000)

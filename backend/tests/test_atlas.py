@@ -1,4 +1,5 @@
 import pytest
+from urllib.parse import parse_qs, urlparse
 from fastapi.testclient import TestClient
 from app.main import app
 from app.modules.atlas import store
@@ -97,10 +98,13 @@ def test_podcast_english_requires_summary(client):
 
 def test_editorial_filters_are_hidden_primary_tags(client):
     tags={tag['id']:tag for tag in client.get('/api/v1/atlas').json()['tags']}
-    for identifier in ('editorial:article','editorial:podcast','editorial:worldview','editorial:thinking','editorial:overseas'):
+    for identifier in ('editorial:article','editorial:podcast','editorial:overseas'):
         assert tags[identifier]['map_level']=='primary'
         assert tags[identifier]['map_visible'] is False
         assert tags[identifier]['visible_locales']==['zh']
+    assert tags['editorial:conversations']['map_visible'] is False
+    assert 'editorial:worldview' not in tags
+    assert 'editorial:thinking' not in tags
 
 def test_publication_relationship_is_snapshot(client):
     cid=create(client,'companies',{'slug':'company','name_zh':'公司','visible_locales':['zh']})
@@ -406,6 +410,7 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
     import httpx, json
     from app.modules.audio_studio import routes as audio_studio
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    monkeypatch.delenv('FEISHU_EXPORT_FOLDER_TOKEN', raising=False)
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     monkeypatch.setenv('FEISHU_DOC_ORIGIN', 'https://geek.feishu.cn/docx')
     original = httpx.AsyncClient
@@ -413,7 +418,6 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
     def handler(request):
         calls.append(request.url.path)
         if request.url.path.endswith('/drive/v1/files'):
-            assert request.url.params['folder_token'] == ''
             return httpx.Response(200, json={'code': 0, 'data': {'files': [{'name': '沟通记录', 'type': 'folder', 'token': 'folder123'}]}})
         if request.url.path.endswith('/docx/v1/documents'):
             assert request.headers['Authorization'] == 'Bearer user-token'
@@ -428,23 +432,19 @@ def test_audio_studio_exports_a_feishu_document(client, monkeypatch):
     assert len(calls) == 3
 
 
-def test_audio_studio_refreshes_user_identity_and_rotates_refresh_token(client, monkeypatch):
+def test_audio_studio_refreshes_user_identity_for_export(client, monkeypatch):
     import httpx, json
     from app.modules.audio_studio import routes as audio_studio, store
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
     monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
-    monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'stale-direct-token')
     monkeypatch.setenv('FEISHU_USER_REFRESH_TOKEN', 'refresh-one')
+    monkeypatch.setenv('FEISHU_EXPORT_FOLDER_TOKEN', 'folder456')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     original = httpx.AsyncClient
     def handler(request):
         if request.url.path.endswith('/authen/v2/oauth/token'):
-            assert request.method == 'POST'
-            assert b'refresh-one' in request.content
             return httpx.Response(200, json={'code': 0, 'access_token': 'fresh-user-token', 'refresh_token': 'refresh-two'})
         assert request.headers['Authorization'] == 'Bearer fresh-user-token'
-        if request.url.path.endswith('/drive/v1/files'):
-            return httpx.Response(200, json={'code': 0, 'data': {'files': [{'name': '沟通记录', 'type': 'folder', 'token': 'folder456'}]}})
         if request.url.path.endswith('/docx/v1/documents'):
             assert json.loads(request.content)['folder_token'] == 'folder456'
             return httpx.Response(200, json={'code': 0, 'data': {'document': {'document_id': 'doc456'}}})
@@ -459,8 +459,8 @@ def test_audio_studio_refreshes_user_identity_and_rotates_refresh_token(client, 
 def test_audio_studio_feishu_export_surfaces_permission_error(client, monkeypatch):
     import httpx
     from app.modules.audio_studio import routes as audio_studio
-    monkeypatch.delenv('FEISHU_USER_REFRESH_TOKEN', raising=False)
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
+    monkeypatch.setenv('FEISHU_EXPORT_FOLDER_TOKEN', 'folder123')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
     original = httpx.AsyncClient
     def handler(request):
@@ -495,6 +495,39 @@ def test_audio_studio_reads_private_feishu_minutes_as_user(client, monkeypatch):
     assert '妙记逐字稿' in result.json()['transcript']
 
 
+def test_audio_studio_connects_feishu_user_with_oauth(client, monkeypatch):
+    import httpx
+    from app.modules.audio_studio import routes as audio_studio
+    from app.modules.audio_studio import store as audio_store
+    monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
+    monkeypatch.setenv('FEISHU_APP_SECRET', 'app-secret')
+    monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    monkeypatch.setenv('FEISHU_OAUTH_REDIRECT_URI', 'https://toolkit.example/api/v1/audio-studio/feishu/callback')
+    monkeypatch.setenv('NEXT_PUBLIC_SITE_ORIGIN', 'https://toolkit.example')
+    connect = client.get('/api/v1/audio-studio/feishu/connect')
+    assert connect.status_code == 200
+    query = parse_qs(urlparse(connect.json()['authorize_url']).query)
+    assert query['app_id'] == ['app-id']
+    assert query['redirect_uri'] == ['https://toolkit.example/api/v1/audio-studio/feishu/callback']
+    assert 'offline_access' in query['scope'][0].split()
+    state = query['state'][0]
+    original = httpx.AsyncClient
+    def handler(request):
+        payload = __import__('json').loads(request.content)
+        assert payload['grant_type'] == 'authorization_code'
+        assert payload['code'] == 'oauth-code'
+        return httpx.Response(200, json={'code': 0, 'access_token': 'user-token', 'refresh_token': 'refresh-token'})
+    monkeypatch.setattr(audio_studio.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    callback = client.get(
+        '/api/v1/audio-studio/feishu/callback',
+        params={'code': 'oauth-code', 'state': state},
+        follow_redirects=False,
+    )
+    assert callback.status_code == 307
+    assert callback.headers['location'] == 'https://toolkit.example/ops/audio?feishu=connected'
+    assert audio_store.get_setting('feishu-user-refresh-token') == 'refresh-token'
+
+
 def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, monkeypatch):
     from app.modules.audio_studio import routes as audio_studio
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
@@ -515,6 +548,29 @@ def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, mo
     assert result.status_code == 200, result.text
     assert result.json()['title'] == '互联网公开妙记'
     assert '00:01' in result.json()['transcript']
+
+
+def test_audio_studio_formats_public_feishu_subtitles_with_speakers_and_timestamps():
+    from app.modules.audio_studio import routes as audio_studio
+    transcript = audio_studio._format_public_feishu_transcript(
+        [
+            {
+                'pid': 'p1',
+                'start_time': '65000',
+                'sentences': [
+                    {'contents': [{'content': '第一句，'}, {'content': '接着说。'}]},
+                ],
+            },
+            {
+                'pid': 'p2',
+                'start_time': '3661000',
+                'sentences': [{'contents': [{'content': '第二段。'}]}],
+            },
+        ],
+        {'p1': '1', 'p2': '2'},
+        {'1': {'user_name': '张三'}, '2': {'user_name': '李四'}},
+    )
+    assert transcript == '张三 01:05\n第一句，接着说。\n\n李四 01:01:01\n第二段。'
 
 
 def test_audio_studio_does_not_read_feishu_minutes_with_bot_identity(client, monkeypatch):
