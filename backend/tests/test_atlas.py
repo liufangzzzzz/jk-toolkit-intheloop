@@ -98,10 +98,13 @@ def test_podcast_english_requires_summary(client):
 
 def test_editorial_filters_are_hidden_primary_tags(client):
     tags={tag['id']:tag for tag in client.get('/api/v1/atlas').json()['tags']}
-    for identifier in ('editorial:article','editorial:podcast','editorial:worldview','editorial:thinking','editorial:overseas'):
+    for identifier in ('editorial:article','editorial:podcast','editorial:overseas'):
         assert tags[identifier]['map_level']=='primary'
         assert tags[identifier]['map_visible'] is False
         assert tags[identifier]['visible_locales']==['zh']
+    assert tags['editorial:conversations']['map_visible'] is False
+    assert 'editorial:worldview' not in tags
+    assert 'editorial:thinking' not in tags
 
 def test_publication_relationship_is_snapshot(client):
     cid=create(client,'companies',{'slug':'company','name_zh':'公司','visible_locales':['zh']})

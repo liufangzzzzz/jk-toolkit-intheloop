@@ -44,3 +44,5 @@
 .studio .tag-level-group .index-row.selected{background:rgba(255,253,248,.92)}
 .studio .skill-textarea{min-height:480px;font-size:15px;line-height:1.8;background:#fffdf8}
 @media(max-width:650px){.studio .studio-heading{align-items:flex-start;flex-direction:column;padding-top:34px;padding-bottom:30px}.studio .tag-level-group{padding:10px}}
+.affiliation-row{display:grid;grid-template-columns:minmax(150px,1.2fr) minmax(100px,.7fr) repeat(3,minmax(110px,1fr)) auto;gap:8px;align-items:center;padding:12px 0;border-top:1px solid var(--line)}
+@media(max-width:760px){.affiliation-row{grid-template-columns:1fr}.affiliation-row button{justify-self:start}}

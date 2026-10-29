@@ -415,7 +415,18 @@ def _xyz_transcript(url: str) -> dict:
         return None
     mid = media_id(detail)
     if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
-    text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
+    # Prefer timed captions for both the audio desk and the independent site.
+    # Older xyz builds only support plain output, so keep that as a fallback.
+    text = ''
+    for caption_format in ('vtt', 'srt'):
+        try:
+            timed = _run([exe, 'transcript', episode, '--media-id', mid, '--format', caption_format, '--text'])
+            text = _vtt_text(timed)
+            if text: break
+        except ValueError:
+            continue
+    if not text:
+        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
     return {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
 
 

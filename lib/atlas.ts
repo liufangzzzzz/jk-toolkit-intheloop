@@ -1,12 +1,19 @@
 export type Locale = "zh" | "en";
 export type Tag = {
-  tag_type?: "topic" | "company" | "product";
+  tag_type?: "content_type" | "entity" | "technical_topic" | "topic" | "company" | "product";
+  entity_kind?: "company" | "product" | "person" | null;
+  visibility?: "public" | "internal";
+  affiliations?: {company_id:string;relationship:"employment"|"founder"|"advisor"|"board"|"other";is_primary?:boolean;title_zh?:string;title_en?:string;start_date?:string;end_date?:string;status?:"current"|"former"}[];
   map_level?: "primary" | "medium" | "secondary";
   aliases?: string[];
   website?: string;
+  announced_date?: string;
+  released_date?: string;
+  ended_date?: string;
   map_visible?: boolean;
   parent_ids?: string[];
   related_tag_ids?: string[];
+  featured_content_ids?: string[];
   id: string;
   revision: number;
   slug: string;
@@ -53,6 +60,7 @@ export type Product = {
 export type Version = {
   title: string;
   summary: string;
+  reading_hint?: string;
   body: string;
   destination?: "hosted" | "external";
   external_url?: string;
@@ -60,6 +68,7 @@ export type Version = {
   links?: { label: string; url: string }[];
 };
 export type Content = {
+  visibility?: "public" | "internal";
   chinese_only?: boolean;
   source_account?: string;
   brand?: "geekpark" | "intheloop" | "linkstart";
@@ -75,6 +84,8 @@ export type Content = {
   duration: string;
   company_ids: string[];
   tag_ids: string[];
+  ai_recommended_tag_ids?: string[];
+  ai_suggested_tags?: string[];
   versions: Partial<Record<Locale, Version>>;
   publications?: {
     locale: Locale;
@@ -87,6 +98,7 @@ export type Catalogue = {
   tags: Tag[];
   products: Product[];
   contents: Content[];
+  homepage_featured_ids?: string[];
 };
 export const dimensions: Record<string, string> = {
   technology: "技术路线",
@@ -100,4 +112,4 @@ export const enDimensions: Record<string, string> = {
   value_chain: "Value chain",
   application: "Applications",
 };
-export const blankVersion: Version = { title: "", summary: "", body: "" };
+export const blankVersion: Version = { title: "", summary: "", reading_hint: "", body: "" };

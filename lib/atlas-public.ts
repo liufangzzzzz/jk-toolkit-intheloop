@@ -8,13 +8,6 @@ export const mapGroups = [
 export function timeline(data: Catalogue, filter: {group?:string;tag?:string;company?:string}) {
   const tags = data.tags.filter(t => filter.tag ? t.slug === filter.tag : filter.group ? t.dimension === filter.group : true);
   const ids = new Set(tags.map(t=>t.id));
-  const rank=(t:Catalogue['tags'][number])=>t.map_level==='primary'?3:t.map_level==='medium'?2:1;
-  // Follow only descending relationships; same-level links never widen results.
-  let changed=true;
-  while(changed){changed=false;for(const root of data.tags.filter(t=>ids.has(t.id))){
-    for(const child of data.tags){if(!ids.has(child.id)&&rank(child)<rank(root)&&
-      (root.related_tag_ids?.includes(child.id)||child.related_tag_ids?.includes(root.id)||child.parent_ids?.includes(root.id))){ids.add(child.id);changed=true}}
-  }}
   const company = data.companies.find(c=>c.slug===filter.company);
   return data.contents.filter(c=>
     (!filter.company || (!!company&&c.company_ids.includes(company.id))) &&
@@ -22,10 +15,19 @@ export function timeline(data: Catalogue, filter: {group?:string;tag?:string;com
   ).sort((a,b)=>b.date.localeCompare(a.date));
 }
 
-export type EditorialView = 'article' | 'podcast' | 'worldview' | 'thinking' | 'overseas';
+export function featuredForTag(data:Catalogue,tagId:string){
+ const tag=data.tags.find(t=>t.id===tagId),byId=new Map(data.contents.map(c=>[c.id,c]));
+ return (tag?.featured_content_ids||[]).map(id=>byId.get(id)).filter((c):c is Content=>!!c);
+}
+
+export type EditorialView = 'featured' | 'conversations' | 'podcast' | 'overseas';
 export function editorialView(data: Catalogue, view?: string) {
   const entries = timeline(data, {});
-  const fixed:Record<string,string>={article:'editorial:article',podcast:'editorial:podcast',worldview:'editorial:worldview',thinking:'editorial:thinking',overseas:'editorial:overseas'};
+  if(view==='featured'){
+    const byId=new Map(entries.map(c=>[c.id,c]));
+    return (data.homepage_featured_ids||[]).map(id=>byId.get(id)).filter((c):c is Content=>!!c);
+  }
+  const fixed:Record<string,string>={conversations:'editorial:conversations',podcast:'editorial:podcast',overseas:'editorial:overseas'};
   if (view && fixed[view]) return entries.filter(content => content.tag_ids.includes(fixed[view]));
   return entries;
 }

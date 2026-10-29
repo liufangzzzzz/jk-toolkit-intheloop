@@ -616,7 +616,6 @@ type WebsiteWorkspaceProps = {
 function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
   const { status, parsed, busy, notice } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
-  const [editingBody, setEditingBody] = useState(false);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
 
@@ -633,15 +632,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
     if (dragDepth.current === 0) setDragging(false);
   }
 
-  function toggleBodyEditing() {
-    const root = iframeRef.current?.contentDocument?.getElementById('website-content');
-    if (!root) return;
-    if (!editingBody) {
-      root.setAttribute('contenteditable', 'true');
-      root.focus();
-      setEditingBody(true);
-      return;
-    }
+  function saveEditedBody(root: HTMLElement) {
     const copy = root.cloneNode(true) as HTMLElement;
     copy.removeAttribute('contenteditable');
     copy.querySelectorAll<HTMLImageElement>('img[data-asset-ref]').forEach((image) => {
@@ -649,8 +640,14 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
       image.removeAttribute('data-asset-ref');
     });
     props.onUpdate({ content_html: copy.innerHTML });
-    root.removeAttribute('contenteditable');
-    setEditingBody(false);
+  }
+
+  function enableBodyEditing() {
+    const root = iframeRef.current?.contentDocument?.getElementById('website-content');
+    if (!root) return;
+    root.setAttribute('contenteditable', 'true');
+    root.setAttribute('aria-label', '官网正文编辑器');
+    root.oninput = () => saveEditedBody(root);
   }
 
   function updateTitle(value: string) {
@@ -673,12 +670,11 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
           <div className="preview-head">
             <button className="text-button" onClick={props.onReset}>返回导入</button>
             <div className="preview-actions">
-              <button className={editingBody ? 'preview-edit active' : 'preview-edit'} onClick={toggleBodyEditing}>{editingBody ? '完成正文修改' : '修改正文'}</button>
-              <span className="preview-label">官网预览</span>
+              <span className="preview-label editable">正文可直接编辑</span>
             </div>
           </div>
           <label className="preview-title-editor">标题<input value={parsed.article.title} onChange={(event) => updateTitle(event.target.value)} /></label>
-          <iframe ref={iframeRef} className="document-preview" title="官网文章预览" srcDoc={parsed.preview_html} sandbox="allow-same-origin" referrerPolicy="no-referrer" />
+          <iframe ref={iframeRef} onLoad={enableBodyEditing} className="document-preview editable-document" title="官网文章正文编辑器" srcDoc={parsed.preview_html} sandbox="allow-same-origin" referrerPolicy="no-referrer" />
         </section>
         <aside className="publish-sidebar">
           <section className="editor-panel">
@@ -690,15 +686,16 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             {parsed.article.image_issues.length > 0 && <div className="image-issues"><strong>未导入图片</strong>{parsed.article.image_issues.map((issue) => <div key={`${issue.index}-${issue.source_url}`}><span>{issue.index}. {issue.label}</span><small>{issue.message}</small>{issue.source_url && <a href={issue.source_url} target="_blank" rel="noreferrer">打开原图</a>}</div>)}</div>}
           </section>
           <section className="action-panel vertical">
-            <div><strong>{status?.nickname || '极客公园官网'}</strong><small>{status?.connected ? '账号已连接' : '账号未连接'}</small></div>
+            <div><strong>最后确认发布</strong><small>{status?.connected ? `账号已连接：${status.nickname || '极客公园官网'}` : '账号未连接'}</small></div>
+            {status && status.accounts.length > 1 && <label className="publish-account">发布账号<select value={props.selectedAccount} onChange={(event) => props.onAccount(event.target.value)}>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
             <div className="publish-buttons">
-              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={editingBody || busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
-              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={editingBody || busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
+              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
+              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
-          {props.publishResult?.public_url && <a className="result-link success" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}
-          {props.publishResult?.admin_edit_url && <a className="result-link success" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}
+          {props.publishResult?.public_url && <a className="result-link success" href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看发布链接</a>}
+          {props.publishResult?.admin_edit_url && <a className="result-link success" href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">去后台修改</a>}
           {props.publishResult?.failed_images?.map((issue) => <a className="result-link warning" href={issue.asset_url} key={issue.asset_url}>下载需手动处理的第 {issue.index} 张原图</a>)}
         </aside>
       </div>
@@ -711,7 +708,6 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
       <section className="control-panel connection-panel">
         <div className="section-heading"><span>01</span><div><h2>极客公园官网连接</h2><p className={status?.connected ? 'state-ok' : 'state-idle'}>{status?.connected ? '已连接' : '未连接'}</p></div></div>
         <dl className="connection-summary">
-          {status && status.accounts.length > 1 && <div><dt>发布账号</dt><dd><select value={props.selectedAccount} onChange={(event) => props.onAccount(event.target.value)}>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></dd></div>}
           <div><dt>服务器账号</dt><dd>{status?.fixed_credentials ? '已配置' : '未配置'}</dd></div>
           <div><dt>当前作者</dt><dd>{status?.nickname || '尚未连接'}</dd></div>
         </dl>
@@ -742,7 +738,7 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
         <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
-      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看刚发布的页面</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">进入官网后台继续编辑</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张待处理原图</a>)}</div>}
+      {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看发布链接</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">去后台修改</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张待处理原图</a>)}</div>}
     </div>
   );
 }

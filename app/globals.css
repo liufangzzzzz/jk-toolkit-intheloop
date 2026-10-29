@@ -209,6 +209,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .connection-summary dd { margin: 0; overflow-wrap: anywhere; font-size: 11px; font-weight: 700; text-align: right; }
 .inline-help { margin: -8px 0 0; color: #7b5e00; font-size: 10px; line-height: 1.5; }
 .preview-label { padding: 7px 10px; border: 1px solid var(--line); font-size: 10px; }
+.preview-label.editable { border-color: #218255; background: #eaf9f1; color: #125c38; }
+.editable-document { border-color: #218255; }
 .preview-title-editor { display: grid; gap: 8px; margin-bottom: 14px; color: var(--muted); font-size: 11px; font-weight: 700; }
 .preview-title-editor input { width: 100%; height: 52px; padding: 0 14px; border: 1px solid var(--ink); border-radius: 0; outline: 0; background: var(--white); color: var(--ink); font-size: 18px; font-weight: 700; }
 .preview-title-editor input:focus { box-shadow: inset 0 0 0 2px var(--ink); }
@@ -219,6 +221,8 @@ button:disabled { cursor: not-allowed; opacity: .42; }
 .action-panel strong { font-size: 13px; }
 .action-panel small { margin-top: 4px; color: var(--muted); font-size: 10px; }
 .publish-buttons > button { flex: 1; }
+.publish-account { display: grid; gap: 7px; color: var(--muted); font-size: 10px; font-weight: 700; }
+.publish-account select { width: 100%; height: 46px; padding: 0 12px; border: 1px solid var(--ink); border-radius: 0; background: var(--white); color: var(--ink); font: inherit; }
 .result-link { display: block; padding: 13px 15px; border: 1px solid var(--ink); background: var(--ink); color: white; font-size: 11px; font-weight: 700; text-align: center; text-decoration: none; }
 .result-link.success { border-color: #218255; background: #eaf9f1; color: #125c38; }
 .result-link.warning { border-color: #9a6800; background: #fff1bf; color: #694900; }
