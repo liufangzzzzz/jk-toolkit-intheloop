@@ -147,6 +147,7 @@ export default function OperationsWorkbench() {
   const [selectedColumn, setSelectedColumn] = useState(0);
   const [websitePublishResult, setWebsitePublishResult] = useState<PublishResult | null>(null);
   const [selectedWebsiteAccount, setSelectedWebsiteAccount] = useState('default');
+  const [websiteAccountConfirmed, setWebsiteAccountConfirmed] = useState(false);
 
   const loadWechatSettings = useCallback(async () => {
     try {
@@ -303,12 +304,14 @@ export default function OperationsWorkbench() {
     }
   }
 
-  async function connectWebsite() {
+  async function connectWebsite(accountId = selectedWebsiteAccount) {
     setWebsiteBusy('connecting');
     setWebsiteNotice('');
     try {
-      const next = await api<WebsiteStatus>(`/website-import/connect?account_id=${encodeURIComponent(selectedWebsiteAccount)}`, { method: 'POST' });
+      const next = await api<WebsiteStatus>(`/website-import/connect?account_id=${encodeURIComponent(accountId)}`, { method: 'POST' });
       setWebsiteStatus(next);
+      setSelectedWebsiteAccount(next.account_id);
+      setWebsiteAccountConfirmed(true);
       setSelectedColumn(preferredColumn(next, websiteSource));
       setWebsiteNotice(`官网账号连接成功${next.nickname ? `：${next.nickname}` : ''}`);
     } catch (failure) {
@@ -338,6 +341,7 @@ export default function OperationsWorkbench() {
     setWebsiteNotice('');
     setWebsiteParsed(null);
     setWebsitePublishResult(null);
+    setWebsiteAccountConfirmed(false);
     try {
       let parsed: WebsiteParseResult;
       if (websiteSource === 'url') {
@@ -485,13 +489,14 @@ export default function OperationsWorkbench() {
               parsed={websiteParsed}
               selectedColumn={selectedColumn}
               selectedAccount={selectedWebsiteAccount}
+              accountConfirmed={websiteAccountConfirmed}
               publishResult={websitePublishResult}
-              onConnect={connectWebsite}
               onAccount={(accountId) => {
                 setSelectedWebsiteAccount(accountId);
+                setWebsiteAccountConfirmed(false);
                 setWebsiteNotice('');
                 setWebsitePublishResult(null);
-                void loadWebsiteStatus(websiteSource, accountId);
+                void connectWebsite(accountId);
               }}
               onSource={(source) => {
                 setWebsiteSource(source);
@@ -503,7 +508,7 @@ export default function OperationsWorkbench() {
               onColumn={setSelectedColumn}
               onUpdate={updateWebsiteArticle}
               onPublish={publishWebsite}
-              onReset={() => { setWebsiteParsed(null); setWebsiteNotice(''); setWebsitePublishResult(null); }}
+              onReset={() => { setWebsiteParsed(null); setWebsiteAccountConfirmed(false); setWebsiteNotice(''); setWebsitePublishResult(null); }}
             />
           )}
         </section>
@@ -600,8 +605,8 @@ type WebsiteWorkspaceProps = {
   parsed: WebsiteParseResult | null;
   selectedColumn: number;
   selectedAccount: string;
+  accountConfirmed: boolean;
   publishResult: PublishResult | null;
-  onConnect: () => void;
   onAccount: (accountId: string) => void;
   onSource: (source: 'url' | 'word') => void;
   onSourceUrl: (value: string) => void;
@@ -686,11 +691,11 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             {parsed.article.image_issues.length > 0 && <div className="image-issues"><strong>未导入图片</strong>{parsed.article.image_issues.map((issue) => <div key={`${issue.index}-${issue.source_url}`}><span>{issue.index}. {issue.label}</span><small>{issue.message}</small>{issue.source_url && <a href={issue.source_url} target="_blank" rel="noreferrer">打开原图</a>}</div>)}</div>}
           </section>
           <section className="action-panel vertical">
-            <div><strong>最后确认发布</strong><small>{status?.connected ? `账号已连接：${status.nickname || '极客公园官网'}` : '账号未连接'}</small></div>
-            {status && status.accounts.length > 1 && <label className="publish-account">发布账号<select value={props.selectedAccount} onChange={(event) => props.onAccount(event.target.value)}>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
+            <div><strong>最后确认发布</strong><small>{props.accountConfirmed && status?.connected ? `已连接：${status.nickname || status.account_label}` : '请选择本次发布账号'}</small></div>
+            {status && status.accounts.length > 0 && <label className="publish-account">发布账号<select value={props.accountConfirmed ? props.selectedAccount : ''} onChange={(event) => props.onAccount(event.target.value)} disabled={busy==='connecting'}><option value="" disabled>{busy==='connecting'?'正在连接账号…':'选择发布账号'}</option>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
             <div className="publish-buttons">
-              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
-              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
+              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !props.accountConfirmed || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
+              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !props.accountConfirmed || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
@@ -706,13 +711,12 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
   return (
     <div className="workspace-grid website-grid">
       <section className="control-panel connection-panel">
-        <div className="section-heading"><span>01</span><div><h2>极客公园官网连接</h2><p className={status?.connected ? 'state-ok' : 'state-idle'}>{status?.connected ? '已连接' : '未连接'}</p></div></div>
+        <div className="section-heading"><span>01</span><div><h2>极客公园官网发布</h2><p className={status?.accounts.length ? 'state-ok' : 'state-idle'}>{status?.accounts.length ? '服务已就绪' : '尚未配置'}</p></div></div>
         <dl className="connection-summary">
-          <div><dt>服务器账号</dt><dd>{status?.fixed_credentials ? '已配置' : '未配置'}</dd></div>
-          <div><dt>当前作者</dt><dd>{status?.nickname || '尚未连接'}</dd></div>
+          <div><dt>可用发布账号</dt><dd>{status?.accounts.length ? `${status.accounts.length} 个` : '未配置'}</dd></div>
+          <div><dt>账号选择</dt><dd>发布前确认</dd></div>
         </dl>
-        <button className="secondary-button full" onClick={props.onConnect} disabled={!status?.fixed_credentials || busy !== ''}>{busy === 'connecting' ? '连接中' : status?.connected ? '重新检测连接' : '连接官网'}</button>
-        {!status?.fixed_credentials && <p className="inline-help">请先在宝塔环境变量中填写官网账号和密码。</p>}
+        {!status?.accounts.length && <p className="inline-help">请先在宝塔环境变量中填写官网账号和密码。</p>}
       </section>
       <section className="control-panel source-panel">
         <div className="section-heading"><span>02</span><div><h2>导入文章</h2><p>微信链接或 Word</p></div></div>
