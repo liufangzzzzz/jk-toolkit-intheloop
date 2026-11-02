@@ -324,7 +324,7 @@ async def publish_article(
         author_id = saved.get("author_id")
         content, cover, warnings, failed_images = await _prepare_images(article, access_key)
     columns = saved.get("columns") or []
-    default_column = _industry_column_id(columns) if article.source_type in {"doc", "docx"} else 0
+    default_column = _industry_column_id(columns) if article.source_type in {"doc", "docx", "text"} else 0
     resolved_column = int(column_id or default_column or saved.get("column_id") or 0)
     state = "published" if mode == "publish" else "unpublished"
     payload = {

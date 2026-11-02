@@ -133,10 +133,7 @@ class Content(Base):
         if isinstance(value,dict):
             value = dict(value)
             if not value.get('brand'):
-                value['brand'] = 'linkstart' if value.get('kind')=='podcast' else 'intheloop'
-            host = urlparse(str(value.get('source_url') or '')).hostname or ''
-            if host == 'xiaoyuzhoufm.com' or host.endswith('.xiaoyuzhoufm.com'):
-                value['chinese_only'] = True
+                value['brand'] = 'intheloop'
         return value
 
     chinese_only: bool = False
