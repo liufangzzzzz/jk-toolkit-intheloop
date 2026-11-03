@@ -17,7 +17,7 @@
 | 飞书机器人应用 | `FEISHU_APP_ID`、`FEISHU_APP_SECRET` | 同一个应用承载机器人能力和用户身份授权 |
 | 机器人应用的用户身份 | 工作台内点击“连接机器人用户身份” | 读取你可见的私有妙记，并以你的用户身份在云盘创建文档；令牌由服务端保存和刷新 |
 | 飞书导出文件夹 | `FEISHU_EXPORT_FOLDER_NAME`、`FEISHU_EXPORT_FOLDER_TOKEN` | 默认按名称查找个人云盘根目录下的“沟通记录”；只有重名或不在根目录时才填写 token |
-| 小宇宙 transcript | 工作台内点击“连接小宇宙” | 使用手机号和短信验证码完成一次连接；凭证只保存在服务器数据卷，不进入网页和 GitHub |
+| 小宇宙 transcript | 工作台内点击“连接小宇宙” | 使用小宇宙 App 扫码完成一次连接；凭证只保存在服务器数据卷，不进入网页和 GitHub |
 
 `ITL_SESSION_SECRET` 和 `ITL_AGENT_API_KEY` 由部署人员生成随机值，你不需要自己想。公开的 In The Loop 官网不需要任何密码或 AI Key。
 
@@ -53,7 +53,7 @@ docker compose up -d --force-recreate
 
 用户授权默认申请 `offline_access docx:document drive:drive minutes:minutes.basic:read minutes:minutes.transcript:export`。这些权限必须在飞书开放平台的“用户身份”权限中开通，并在修改后发布新的应用版本；否则飞书可能不会返回长期 refresh token，或在创建文档时返回 403。可通过 `FEISHU_OAUTH_SCOPES` 覆盖申请范围。
 
-小宇宙 transcript 组件已经固定安装在后端镜像中，并优先输出带时间轴的逐字稿。在“音频整理”配置区点击“连接小宇宙”，输入手机号和短信验证码即可完成一次连接。服务会把登录凭证保存到持久数据卷 `/data/xiaoyuzhou/token.json`，容器更新不会丢失；登录过期时可在同一位置重新连接。三个 `XIAOYUZHOU_*_TOKEN` 环境变量只作为部署迁移时的备用方式，不要求日常填写。不要把 token 文件或真实 token 提交到仓库。
+小宇宙 transcript 组件已经固定安装在后端镜像中，并优先输出带时间轴的逐字稿。在“音频整理”配置区点击“连接小宇宙”，使用小宇宙 App 扫码确认即可完成一次连接。服务会把登录凭证保存到持久数据卷 `/data/xiaoyuzhou/token.json`，容器更新不会丢失；登录过期时可在同一位置重新连接。三个 `XIAOYUZHOU_*_TOKEN` 环境变量只作为部署迁移时的备用方式，不要求日常填写。不要把 token 文件或真实 token 提交到仓库。
 
 独立官网服务器只需：
 

@@ -556,6 +556,52 @@ def test_audio_studio_connects_feishu_user_with_oauth(client, monkeypatch):
     assert audio_store.get_setting('feishu-user-refresh-token') == 'refresh-token'
 
 
+def test_audio_studio_connects_xiaoyuzhou_with_qrcode(client, monkeypatch, tmp_path):
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('XIAOYUZHOU_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(audio_studio, '_executable', lambda *_args: '/usr/local/bin/xyz')
+    monkeypatch.setattr(audio_studio, '_xiaoyuzhou_qr_data_url', lambda value: 'data:image/png;base64,test')
+    audio_studio._xiaoyuzhou_qr_sessions.clear()
+
+    class Response:
+        content = b'{}'
+        text = ''
+        def __init__(self, payload, headers=None):
+            self.status_code = 200
+            self._payload = payload
+            self.headers = headers or {}
+        def json(self): return self._payload
+
+    class Client:
+        def __init__(self, **kwargs): self.cookies = dict(kwargs.get('cookies') or {})
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def post(self, url, json):
+            if url.endswith('/qrcode/create'):
+                assert json == {'clientId': 'xyz-web'}
+                return Response({'id': 'qr-id', 'url': 'https://accounts.xiaoyuzhoufm.com/login?qr=one'})
+            assert url.endswith('/qrcode/login')
+            assert json == {'id': 'qr-id'}
+            return Response({'status': 'CONFIRMED'}, {
+                'x-jike-access-token': 'access-token',
+                'x-jike-refresh-token': 'refresh-token',
+            })
+
+    monkeypatch.setattr(audio_studio.httpx, 'Client', Client)
+    created = client.post('/api/v1/audio-studio/xiaoyuzhou/qrcode/create')
+    assert created.status_code == 200, created.text
+    assert created.json()['qr_data_url'].startswith('data:image/png')
+    checked = client.post('/api/v1/audio-studio/xiaoyuzhou/qrcode/status', json={
+        'login_id': created.json()['login_id'],
+    })
+    assert checked.status_code == 200, checked.text
+    assert checked.json()['status'] == 'connected'
+    token = __import__('json').loads((tmp_path/'xiaoyuzhou'/'token.json').read_text())
+    assert token['access_token'] == 'access-token'
+    assert token['refresh_token'] == 'refresh-token'
+    assert token['device_id']
+
+
 def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, monkeypatch):
     from app.modules.audio_studio import routes as audio_studio
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')
