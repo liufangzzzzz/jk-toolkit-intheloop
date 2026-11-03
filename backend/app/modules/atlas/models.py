@@ -126,6 +126,7 @@ class Version(BaseModel):
     def url(cls, value): return valid_url(value)
 
 class Content(Base):
+    source_locale: Locale = 'zh'
     source_account: str = Field(default='', max_length=180)
     @model_validator(mode='before')
     @classmethod
@@ -171,5 +172,6 @@ class Publication(BaseModel):
 
 class Generate(BaseModel):
     model: str = Field(min_length=1)
-    task: Literal['english','tags','summary','analyze']
+    task: Literal['english','chinese','tags','summary','analyze']
     text: str = Field(min_length=1, max_length=60000)
+    locale: Locale = 'zh'

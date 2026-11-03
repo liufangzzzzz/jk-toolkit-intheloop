@@ -62,7 +62,7 @@ def initialize():
     with database() as db:
         db.executescript(SCHEMA)
         db.execute("BEGIN IMMEDIATE")
-        from .migration import unify_tags, ensure_editorial_tags, classify_tags, seed_initial_taxonomy
+        from .migration import unify_tags, ensure_editorial_tags, classify_tags, seed_initial_taxonomy, structure_content_types
         unify_tags(db, now())
         ensure_editorial_tags(db, now())
         if not db.execute("SELECT 1 FROM atlas_migrations WHERE name='tag-display-relations-v2'").fetchone():
@@ -71,6 +71,7 @@ def initialize():
             db.execute("INSERT INTO atlas_migrations VALUES ('tag-display-relations-v2')")
         classify_tags(db, now())
         seed_initial_taxonomy(db, now())
+        structure_content_types(db, now())
         migrate_person_affiliations(db)
 
 
@@ -177,13 +178,14 @@ def save(kind, data, record_id=None):
             if data.get('visibility', 'public') == 'internal': data['map_visible'] = False
             if tag_type == 'content_type':
                 data['map_visible'] = False
-                if parents: raise ValueError('内容类型不设置上级；它在中文首页筛选区显示')
                 if related: raise ValueError('内容类型不与公司或技术主题建立资料库关系')
             parent_data = {r['id']: json.loads(r['data']) for r in db.execute('SELECT id,data FROM atlas_tags') if r['id'] in parents}
             related_data = {r['id']: json.loads(r['data']) for r in db.execute('SELECT id,data FROM atlas_tags') if r['id'] in related}
             def normalized(value):
                 kind = value.get('tag_type', 'technical_topic')
                 return 'technical_topic' if kind == 'topic' else 'entity' if kind in ('company','product') else kind
+            if tag_type == 'content_type' and any(normalized(x) != 'content_type' for x in parent_data.values()):
+                raise ValueError('内容类型的上级也必须是内容类型')
             if tag_type == 'technical_topic' and any(normalized(x) != 'technical_topic' for x in parent_data.values()):
                 raise ValueError('技术主题的上级也必须是技术主题')
             if tag_type == 'entity' and data.get('entity_kind') == 'company' and parents:
@@ -214,9 +216,10 @@ def save(kind, data, record_id=None):
                     seen.add(current)
                     todo.extend(graph.get(current, []))
         if kind == 'contents':
-            automatic = ['editorial:podcast' if data.get('kind') == 'podcast' else 'editorial:article']
+            automatic = ['editorial:content']
+            if data.get('kind') == 'podcast': automatic.append('editorial:podcast')
             if data.get('section') == 'overseas': automatic.append('editorial:overseas')
-            structural = {'editorial:article', 'editorial:podcast', 'editorial:overseas'}
+            structural = {'editorial:content', 'editorial:article', 'editorial:podcast', 'editorial:overseas'}
             data['tag_ids'] = [tag_id for tag_id in data.get('tag_ids', []) if tag_id not in structural] + automatic
         stamp = now()
         payload = json.dumps(data, ensure_ascii=False)

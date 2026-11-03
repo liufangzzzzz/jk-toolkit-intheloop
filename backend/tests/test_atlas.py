@@ -90,7 +90,7 @@ def test_podcast_english_requires_summary(client):
     identifier=create(client,'contents',record)
     saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
     assert saved['chinese_only'] is True
-    assert 'editorial:podcast' in saved['tag_ids']
+    assert {'editorial:content','editorial:podcast'}.issubset(saved['tag_ids'])
     response=client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'en','revision':1})
     assert response.status_code==409
     assert '仅发布到中文官网' in response.text
@@ -98,13 +98,20 @@ def test_podcast_english_requires_summary(client):
 
 def test_editorial_filters_are_hidden_primary_tags(client):
     tags={tag['id']:tag for tag in client.get('/api/v1/atlas').json()['tags']}
-    for identifier in ('editorial:article','editorial:podcast','editorial:overseas'):
-        assert tags[identifier]['map_level']=='primary'
+    assert 'editorial:article' not in tags
+    assert tags['editorial:content']['map_visible'] is False
+    assert tags['editorial:content']['visible_locales']==['zh','en']
+    for identifier in ('editorial:podcast','editorial:overseas','editorial:conversations'):
         assert tags[identifier]['map_visible'] is False
-        assert tags[identifier]['visible_locales']==['zh']
-    assert tags['editorial:conversations']['map_visible'] is False
+        assert tags[identifier]['parent_ids']==['editorial:content']
     assert 'editorial:worldview' not in tags
     assert 'editorial:thinking' not in tags
+
+def test_regular_story_belongs_to_content_without_forced_subtype(client):
+    identifier=create(client,'contents',article())
+    saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
+    assert 'editorial:content' in saved['tag_ids']
+    assert not {'editorial:podcast','editorial:overseas','editorial:conversations'}.intersection(saved['tag_ids'])
 
 def test_publication_relationship_is_snapshot(client):
     cid=create(client,'companies',{'slug':'company','name_zh':'公司','visible_locales':['zh']})
