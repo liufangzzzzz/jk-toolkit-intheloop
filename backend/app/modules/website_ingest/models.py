@@ -19,8 +19,9 @@ class WebsiteImportArticle(BaseModel):
     content_html: str = Field(min_length=1)
     tags: list[str] = Field(default_factory=list)
     cover_asset: str = ""
-    source_type: Literal["wechat_url", "docx", "doc"]
+    source_type: Literal["wechat_url", "docx", "doc", "text"]
     source_ref: str = ""
+    source_account: str = ""
     warnings: list[str] = Field(default_factory=list)
     image_issues: list[WebsiteImageIssue] = Field(default_factory=list)
 

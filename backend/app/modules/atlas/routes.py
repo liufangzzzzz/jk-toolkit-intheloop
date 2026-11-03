@@ -93,7 +93,7 @@ async def models():
 @router.get('/editorial-skill')
 def editorial_skill():
     default = Path(__file__).with_name('english-editor.md').read_text()
-    return {'instructions': store.get_setting('english-editor', default)}
+    return {'instructions': store.get_setting('english-editor', default), 'default_instructions': default}
 
 @router.put('/editorial-skill')
 def update_editorial_skill(body: EditorialSkill):
@@ -180,8 +180,8 @@ async def import_url(body: ImportURL):
         try:
             item = await to_thread(_xyz_transcript, body.url)
             return {'title': item.get('title',''), 'summary': '', 'body': item.get('transcript',''),
-                    'brand': 'linkstart', 'source_account': '开始连接 LinkStart', 'kind': 'podcast',
-                    'chinese_only': True, 'notice': '已读取小宇宙逐字稿，请核对时间轴和识别结果。'}
+                    'brand': 'intheloop', 'source_account': 'In The Loop', 'kind': 'podcast',
+                    'chinese_only': False, 'notice': '已读取带时间轴的中文逐字稿；可继续编辑标签，英文逐字稿将在后台生成。'}
         except (ValueError, RuntimeError) as exc:
             raise HTTPException(422, str(exc))
     from .extract import extract_url

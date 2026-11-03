@@ -10,7 +10,7 @@ from ...auth import require_auth
 from .assets import read_asset
 from .jobs import complete_job, create_job, fail_job, get_job, get_job_by_key
 from .models import AgentWebsiteUrlRequest, WebsitePublishRequest
-from .parser import parse_wechat_url, parse_word_file, render_preview
+from .parser import parse_pasted_text, parse_wechat_url, parse_word_file, render_preview
 from .publisher import connect_fixed_account, connection_status, publish_article, recent_records
 
 router = APIRouter(prefix="/api/v1/website-import", tags=["website-import"], dependencies=[Depends(require_auth)])
@@ -58,6 +58,14 @@ async def parse_file(file: UploadFile = File(...)) -> dict:
     try:
         article = parse_word_file(raw, filename)
         return _article_payload(article)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail={"message": str(exc)[:500]}) from exc
+
+
+@router.post("/parse-text")
+async def parse_text(body: dict) -> dict:
+    try:
+        return _article_payload(parse_pasted_text(str(body.get("text") or "")))
     except Exception as exc:
         raise HTTPException(status_code=400, detail={"message": str(exc)[:500]}) from exc
 

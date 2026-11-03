@@ -4,6 +4,7 @@ import { api, normalizeWebsiteParseResult } from '../../lib/api';
 import { DragEvent, FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 
 type Tool = 'wechat' | 'website';
+type WebsiteSource = 'url' | 'word' | 'text';
 type BusyState = '' | 'saving' | 'testing' | 'parsing' | 'draft' | 'publishing' | 'connecting';
 
 type WechatBlock = {
@@ -47,7 +48,7 @@ type WebsiteArticle = {
   content_html: string;
   tags: string[];
   cover_asset: string;
-  source_type: 'wechat_url' | 'docx' | 'doc';
+  source_type: 'wechat_url' | 'docx' | 'doc' | 'text';
   source_ref: string;
   warnings: string[];
   image_issues: Array<{
@@ -93,9 +94,9 @@ type PublishResult = {
   duplicate_prevented?: boolean;
 };
 
-function preferredColumn(status: WebsiteStatus | null, source: 'url' | 'word'): number {
+function preferredColumn(status: WebsiteStatus | null, source: WebsiteSource): number {
   if (!status) return 0;
-  if (source === 'word') {
+  if (source === 'word' || source === 'text') {
     const industry = status.columns.find((column) => column.title.trim() === '行业资讯')
       || status.columns.find((column) => column.title.includes('行业资讯'))
       || status.columns.find((column) => column.id === 2);
@@ -137,8 +138,9 @@ export default function OperationsWorkbench() {
   const [wechatRequestId, setWechatRequestId] = useState('');
 
   const [websiteStatus, setWebsiteStatus] = useState<WebsiteStatus | null>(null);
-  const [websiteSource, setWebsiteSource] = useState<'url' | 'word'>('url');
+  const [websiteSource, setWebsiteSource] = useState<WebsiteSource>('url');
   const [websiteUrl, setWebsiteUrl] = useState('');
+  const [websiteText, setWebsiteText] = useState('');
   const [wordFiles, setWordFiles] = useState<File[]>([]);
   const [websiteBusy, setWebsiteBusy] = useState<BusyState>('');
   const [websiteNotice, setWebsiteNotice] = useState('');
@@ -147,6 +149,7 @@ export default function OperationsWorkbench() {
   const [selectedColumn, setSelectedColumn] = useState(0);
   const [websitePublishResult, setWebsitePublishResult] = useState<PublishResult | null>(null);
   const [selectedWebsiteAccount, setSelectedWebsiteAccount] = useState('default');
+  const [websiteAccountConfirmed, setWebsiteAccountConfirmed] = useState(false);
 
   const loadWechatSettings = useCallback(async () => {
     try {
@@ -159,7 +162,7 @@ export default function OperationsWorkbench() {
     }
   }, []);
 
-  const loadWebsiteStatus = useCallback(async (source: 'url' | 'word', accountId = 'default') => {
+  const loadWebsiteStatus = useCallback(async (source: WebsiteSource, accountId = 'default') => {
     try {
       const next = await api<WebsiteStatus>(`/website-import/status?account_id=${encodeURIComponent(accountId)}`);
       setWebsiteStatus(next);
@@ -303,12 +306,14 @@ export default function OperationsWorkbench() {
     }
   }
 
-  async function connectWebsite() {
+  async function connectWebsite(accountId = selectedWebsiteAccount) {
     setWebsiteBusy('connecting');
     setWebsiteNotice('');
     try {
-      const next = await api<WebsiteStatus>(`/website-import/connect?account_id=${encodeURIComponent(selectedWebsiteAccount)}`, { method: 'POST' });
+      const next = await api<WebsiteStatus>(`/website-import/connect?account_id=${encodeURIComponent(accountId)}`, { method: 'POST' });
       setWebsiteStatus(next);
+      setSelectedWebsiteAccount(next.account_id);
+      setWebsiteAccountConfirmed(true);
       setSelectedColumn(preferredColumn(next, websiteSource));
       setWebsiteNotice(`官网账号连接成功${next.nickname ? `：${next.nickname}` : ''}`);
     } catch (failure) {
@@ -334,10 +339,12 @@ export default function OperationsWorkbench() {
   async function parseWebsiteSource() {
     if (websiteSource === 'url' && !websiteUrl.trim()) return;
     if (websiteSource === 'word' && !wordFiles[0]) return;
+    if (websiteSource === 'text' && !websiteText.trim()) return;
     setWebsiteBusy('parsing');
     setWebsiteNotice('');
     setWebsiteParsed(null);
     setWebsitePublishResult(null);
+    setWebsiteAccountConfirmed(false);
     try {
       let parsed: WebsiteParseResult;
       if (websiteSource === 'url') {
@@ -345,12 +352,17 @@ export default function OperationsWorkbench() {
           method: 'POST',
           body: JSON.stringify({ source_url: websiteUrl.trim() }),
         })) as WebsiteParseResult;
-      } else {
+      } else if (websiteSource === 'word') {
         const form = new FormData();
         form.set('file', wordFiles[0]);
         parsed = normalizeWebsiteParseResult(await api<unknown>('/website-import/parse-file', {
           method: 'POST',
           body: form,
+        })) as WebsiteParseResult;
+      } else {
+        parsed = normalizeWebsiteParseResult(await api<unknown>('/website-import/parse-text', {
+          method: 'POST',
+          body: JSON.stringify({ text: websiteText }),
         })) as WebsiteParseResult;
       }
       setWebsiteParsed(parsed);
@@ -451,7 +463,7 @@ export default function OperationsWorkbench() {
               <p className="eyebrow">IN THE LOOP / OPERATIONS</p>
               <h1>{tool === 'wechat' ? '公众号草稿' : '极客公园官网'}</h1>
             </div>
-            <p>{tool === 'wechat' ? '飞书公开文档 → 微信公众号草稿箱' : '微信已发布文章或 Word → 极客公园官网'}</p>
+            <p>{tool === 'wechat' ? '飞书公开文档 → 微信公众号草稿箱' : '微信文章、Word 或粘贴文字 → 极客公园官网'}</p>
           </header>
 
           {tool === 'wechat' ? (
@@ -479,31 +491,34 @@ export default function OperationsWorkbench() {
               status={websiteStatus}
               source={websiteSource}
               sourceUrl={websiteUrl}
+              pastedText={websiteText}
               wordFiles={wordFiles}
               busy={websiteBusy}
               notice={websiteNotice}
               parsed={websiteParsed}
               selectedColumn={selectedColumn}
               selectedAccount={selectedWebsiteAccount}
+              accountConfirmed={websiteAccountConfirmed}
               publishResult={websitePublishResult}
-              onConnect={connectWebsite}
               onAccount={(accountId) => {
                 setSelectedWebsiteAccount(accountId);
+                setWebsiteAccountConfirmed(false);
                 setWebsiteNotice('');
                 setWebsitePublishResult(null);
-                void loadWebsiteStatus(websiteSource, accountId);
+                void connectWebsite(accountId);
               }}
               onSource={(source) => {
                 setWebsiteSource(source);
                 setSelectedColumn(preferredColumn(websiteStatus, source));
               }}
               onSourceUrl={setWebsiteUrl}
+              onPastedText={setWebsiteText}
               onFiles={acceptWordFiles}
               onParse={parseWebsiteSource}
               onColumn={setSelectedColumn}
               onUpdate={updateWebsiteArticle}
               onPublish={publishWebsite}
-              onReset={() => { setWebsiteParsed(null); setWebsiteNotice(''); setWebsitePublishResult(null); }}
+              onReset={() => { setWebsiteParsed(null); setWebsiteAccountConfirmed(false); setWebsiteNotice(''); setWebsitePublishResult(null); }}
             />
           )}
         </section>
@@ -592,19 +607,21 @@ function WechatWorkspace(props: WechatWorkspaceProps) {
 
 type WebsiteWorkspaceProps = {
   status: WebsiteStatus | null;
-  source: 'url' | 'word';
+  source: WebsiteSource;
   sourceUrl: string;
+  pastedText: string;
   wordFiles: File[];
   busy: BusyState;
   notice: string;
   parsed: WebsiteParseResult | null;
   selectedColumn: number;
   selectedAccount: string;
+  accountConfirmed: boolean;
   publishResult: PublishResult | null;
-  onConnect: () => void;
   onAccount: (accountId: string) => void;
-  onSource: (source: 'url' | 'word') => void;
+  onSource: (source: WebsiteSource) => void;
   onSourceUrl: (value: string) => void;
+  onPastedText: (value: string) => void;
   onFiles: (files: File[]) => void;
   onParse: () => void;
   onColumn: (column: number) => void;
@@ -652,8 +669,6 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
 
   function updateTitle(value: string) {
     props.onUpdate({ title: value });
-    const heading = iframeRef.current?.contentDocument?.querySelector('article > h1');
-    if (heading) heading.textContent = value;
   }
 
   function dropWords(event: DragEvent<HTMLDivElement>) {
@@ -686,11 +701,11 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             {parsed.article.image_issues.length > 0 && <div className="image-issues"><strong>未导入图片</strong>{parsed.article.image_issues.map((issue) => <div key={`${issue.index}-${issue.source_url}`}><span>{issue.index}. {issue.label}</span><small>{issue.message}</small>{issue.source_url && <a href={issue.source_url} target="_blank" rel="noreferrer">打开原图</a>}</div>)}</div>}
           </section>
           <section className="action-panel vertical">
-            <div><strong>最后确认发布</strong><small>{status?.connected ? `账号已连接：${status.nickname || '极客公园官网'}` : '账号未连接'}</small></div>
-            {status && status.accounts.length > 1 && <label className="publish-account">发布账号<select value={props.selectedAccount} onChange={(event) => props.onAccount(event.target.value)}>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
+            <div><strong>最后确认发布</strong><small>{props.accountConfirmed && status?.connected ? `已连接：${status.nickname || status.account_label}` : '请选择本次发布账号'}</small></div>
+            {status && status.accounts.length > 0 && <label className="publish-account">发布账号<select value={props.accountConfirmed ? props.selectedAccount : ''} onChange={(event) => props.onAccount(event.target.value)} disabled={busy==='connecting'}><option value="" disabled>{busy==='connecting'?'正在连接账号…':'选择发布账号'}</option>{status.accounts.map((account) => <option key={account.id} value={account.id}>{account.label}</option>)}</select></label>}
             <div className="publish-buttons">
-              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
-              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
+              <button className="secondary-button" onClick={() => props.onPublish('draft')} disabled={busy !== '' || !parsed.article.title.trim() || !props.accountConfirmed || !status?.connected}>{busy === 'draft' ? '正在创建' : '保存草稿'}</button>
+              <button className="primary-button compact" onClick={() => props.onPublish('publish')} disabled={busy !== '' || !parsed.article.title.trim() || !props.accountConfirmed || !status?.connected}>{busy === 'publishing' ? '正在发布' : '直接发布'}</button>
             </div>
           </section>
           {notice && <Notice text={notice} error={!notice.includes('已') && !notice.includes('成功')} />}
@@ -702,27 +717,31 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
     );
   }
 
-  const canParse = props.source === 'url' ? Boolean(props.sourceUrl.trim()) : props.wordFiles.length > 0;
+  const canParse = props.source === 'url'
+    ? Boolean(props.sourceUrl.trim())
+    : props.source === 'text'
+      ? Boolean(props.pastedText.trim())
+      : props.wordFiles.length > 0;
   return (
     <div className="workspace-grid website-grid">
       <section className="control-panel connection-panel">
-        <div className="section-heading"><span>01</span><div><h2>极客公园官网连接</h2><p className={status?.connected ? 'state-ok' : 'state-idle'}>{status?.connected ? '已连接' : '未连接'}</p></div></div>
+        <div className="section-heading"><span>01</span><div><h2>极客公园官网发布</h2><p className={status?.accounts.length ? 'state-ok' : 'state-idle'}>{status?.accounts.length ? '服务已就绪' : '尚未配置'}</p></div></div>
         <dl className="connection-summary">
-          <div><dt>服务器账号</dt><dd>{status?.fixed_credentials ? '已配置' : '未配置'}</dd></div>
-          <div><dt>当前作者</dt><dd>{status?.nickname || '尚未连接'}</dd></div>
+          <div><dt>可用发布账号</dt><dd>{status?.accounts.length ? `${status.accounts.length} 个` : '未配置'}</dd></div>
+          <div><dt>账号选择</dt><dd>发布前确认</dd></div>
         </dl>
-        <button className="secondary-button full" onClick={props.onConnect} disabled={!status?.fixed_credentials || busy !== ''}>{busy === 'connecting' ? '连接中' : status?.connected ? '重新检测连接' : '连接官网'}</button>
-        {!status?.fixed_credentials && <p className="inline-help">请先在宝塔环境变量中填写官网账号和密码。</p>}
+        {!status?.accounts.length && <p className="inline-help">请先在宝塔环境变量中填写官网账号和密码。</p>}
       </section>
       <section className="control-panel source-panel">
-        <div className="section-heading"><span>02</span><div><h2>导入文章</h2><p>微信链接或 Word</p></div></div>
+        <div className="section-heading"><span>02</span><div><h2>导入文章</h2><p>微信链接、Word 或粘贴文字</p></div></div>
         <div className="segmented-control" role="tablist">
           <button className={props.source === 'url' ? 'active' : ''} onClick={() => props.onSource('url')}>微信文章链接</button>
           <button className={props.source === 'word' ? 'active' : ''} onClick={() => props.onSource('word')}>Word 文件</button>
+          <button className={props.source === 'text' ? 'active' : ''} onClick={() => props.onSource('text')}>粘贴文字</button>
         </div>
         {props.source === 'url' ? (
           <label>已发布微信文章<input value={props.sourceUrl} onChange={(event) => props.onSourceUrl(event.target.value)} placeholder="https://mp.weixin.qq.com/s/..." autoComplete="off" /></label>
-        ) : (
+        ) : props.source === 'word' ? (
           <div
             className={`file-dropzone ${dragging ? 'dragging' : ''}`}
             onDragEnter={enterWords}
@@ -734,8 +753,18 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
             <label className="file-button" htmlFor="website-word-file">选择 DOCX / DOC</label>
             <div><strong>{dragging ? '松开即可添加 Word 文件' : '或把多个 Word 拖到这里'}</strong><small>{props.wordFiles.length ? `已排队 ${props.wordFiles.length} 篇：${props.wordFiles.map((file) => file.name).join('、')}` : '每份最大 60 MB；支持多选，解析后逐篇审核'}</small></div>
           </div>
+        ) : (
+          <label className="website-paste-field">粘贴文章
+            <textarea
+              className="website-paste-text"
+              value={props.pastedText}
+              onChange={(event) => props.onPastedText(event.target.value)}
+              placeholder={'第一行作为标题\n\n从这里开始粘贴正文……'}
+            />
+            <small>第一行作为标题，后续作为正文；解析后标题和正文都可直接修改。</small>
+          </label>
         )}
-        <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? '正在读取正文和图片' : '解析并预览'}</button>
+        <button className="primary-button full" onClick={props.onParse} disabled={!canParse || busy !== ''}>{busy === 'parsing' ? (props.source === 'text' ? '正在整理文字' : '正在读取正文和图片') : '解析并预览'}</button>
       </section>
       {notice && <div className="grid-notice"><Notice text={notice} error={!notice.includes('成功')} /></div>}
       {props.publishResult && <div className="publish-success-links"><strong>{props.publishResult.state === 'published' ? '最近一篇已发布' : '最近一篇已存为草稿'}</strong>{props.publishResult.public_url && <a href={props.publishResult.public_url} target="_blank" rel="noreferrer">查看发布链接</a>}{props.publishResult.admin_edit_url && <a href={props.publishResult.admin_edit_url} target="_blank" rel="noreferrer">去后台修改</a>}{props.publishResult.failed_images?.map((issue) => <a href={issue.asset_url} key={issue.asset_url}>下载第 {issue.index} 张待处理原图</a>)}</div>}
@@ -757,11 +786,31 @@ function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string
     setDraft('');
     setMessage('');
   }
+  function updateTag(index: number, value: string) {
+    onChange(tags.map((tag, position) => position === index ? value : tag));
+    setMessage('');
+  }
+  function finishTag(index: number) {
+    const cleaned = tags[index]?.trim();
+    if (!cleaned) {
+      onChange(tags.filter((_, position) => position !== index));
+      return;
+    }
+    const next = tags.map((tag, position) => position === index ? cleaned : tag.trim()).filter(Boolean);
+    onChange(next.filter((tag, position) => next.indexOf(tag) === position));
+  }
+  function moveTag(index: number, direction: -1 | 1) {
+    const target = index + direction;
+    if (target < 0 || target >= tags.length) return;
+    const next = [...tags];
+    [next[index], next[target]] = [next[target], next[index]];
+    onChange(next);
+  }
   return (
     <div className="tag-editor">
-      <label htmlFor="website-tag-input">标签</label>
-      <div className="tag-chips">{tags.map((tag) => (
-        <span className="tag-chip" key={tag}>{tag}<button type="button" aria-label={`删除标签 ${tag}`} onClick={() => { onChange(tags.filter((item) => item !== tag)); setMessage(''); }}>×</button></span>
+      <div className="tag-editor-heading"><label htmlFor="website-tag-input">标签</label><small>{tags.length}/10 · 前面的标签优先</small></div>
+      <div className="tag-chips editable">{tags.map((tag, index) => (
+        <div className="tag-chip" key={index}><span>{index + 1}</span><input aria-label={`编辑标签 ${index + 1}`} value={tag} onChange={(event) => updateTag(index, event.target.value)} onBlur={() => finishTag(index)} onKeyDown={(event) => { if (event.key === 'Enter' && !event.nativeEvent.isComposing) { event.preventDefault(); event.currentTarget.blur(); } }} /><button type="button" aria-label={`上移标签 ${tag}`} disabled={index === 0} onClick={() => moveTag(index, -1)}>↑</button><button type="button" aria-label={`下移标签 ${tag}`} disabled={index === tags.length - 1} onClick={() => moveTag(index, 1)}>↓</button><button type="button" aria-label={`删除标签 ${tag}`} onClick={() => { onChange(tags.filter((_, position) => position !== index)); setMessage(''); }}>×</button></div>
       ))}</div>
       <div className="tag-add-row">
         <input id="website-tag-input" value={draft} placeholder="输入标签，回车添加" onChange={(event) => setDraft(event.target.value)} onBlur={addTags} onKeyDown={(event) => {
@@ -769,7 +818,7 @@ function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string
         }} />
         <button type="button" className="secondary-button" onClick={addTags} disabled={!draft.trim()}>添加</button>
       </div>
-      <small className="inline-help">优先推荐公司、创始人、行业和产品；可删除或自行添加，最多 10 个。</small>
+      <small className="inline-help">自动识别结果只是初稿。每个标签都可直接改字、删除和调整顺序；优先保留行业、公司名、人名和明确的产品名。</small>
       {message && <p className="operation-notice error" role="alert">{message}</p>}
     </div>
   );

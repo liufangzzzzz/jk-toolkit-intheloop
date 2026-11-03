@@ -13,7 +13,7 @@ from app import database as database_module
 from app.main import app
 from app.modules.website_ingest import parser
 from app.modules.website_ingest import publisher
-from app.modules.website_ingest.assets import save_asset
+from app.modules.website_ingest.assets import read_asset, save_asset
 from app.modules.website_ingest.models import WebsiteImportArticle
 
 
@@ -62,6 +62,25 @@ def test_word_parser_extracts_title_summary_and_tags(tmp_path, monkeypatch):
     assert "具身智能" in article.tags
     assert article.source_type == "docx"
     assert "<h1" not in article.content_html
+
+
+def test_pasted_text_parser_adds_short_white_cover(tmp_path, monkeypatch):
+    monkeypatch.setenv("ITL_IMPORT_ASSET_PATH", str(tmp_path / "assets"))
+
+    article = parser.parse_pasted_text(
+        "具身智能进入新阶段\n\n这是文章的第一段，说明行业背景。\n\n这是第二段，提供更多信息。"
+    )
+
+    assert article.title == "具身智能进入新阶段"
+    assert article.source_type == "text"
+    assert article.cover_asset.startswith("ingest-asset://")
+    assert "这是文章的第一段" in article.content_html
+    assert "具身智能" in article.tags
+    raw, _filename, content_type = read_asset(article.cover_asset)
+    with Image.open(io.BytesIO(raw)) as cover:
+        assert cover.size == (1200, 360)
+        assert cover.getpixel((600, 180)) == (255, 255, 255)
+    assert content_type == "image/png"
 
 
 def test_short_abstract_uses_complete_opening_sentences():
@@ -278,6 +297,24 @@ def test_wechat_parser_localizes_images_and_removes_unsafe_markup(tmp_path, monk
     assert "<iframe" not in article.content_html
     assert article.cover_asset.startswith("ingest-asset://")
     assert any("1 个视频模块" in warning for warning in article.warnings)
+
+
+def test_wechat_text_only_mode_skips_image_download_and_reads_account(monkeypatch):
+    page = """
+    <h1 id="activity-name">微信正文</h1><span id="js_name">极客公园</span>
+    <section id="js_content"><p>这是足够长的微信文章正文，用来确认独立站能够复用微信解析能力。</p>
+    <img data-src="https://mmbiz.qpic.cn/body.jpg"></section>
+    """
+    requests = []
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(str(request.url))
+        return httpx.Response(200, text=page, request=request)
+    real_client = httpx.AsyncClient
+    monkeypatch.setattr(parser.httpx, "AsyncClient", lambda **kwargs: real_client(transport=httpx.MockTransport(handler), follow_redirects=True))
+    article = asyncio.run(parser.parse_wechat_url("https://mp.weixin.qq.com/s/test", include_images=False))
+    assert article.source_account == "极客公园"
+    assert "<img" not in article.content_html
+    assert requests == ["https://mp.weixin.qq.com/s/test"]
 
 
 def test_wechat_parser_recognizes_image_bytes_with_generic_content_type(tmp_path, monkeypatch):

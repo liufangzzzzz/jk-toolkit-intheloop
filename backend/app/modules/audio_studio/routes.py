@@ -78,6 +78,15 @@ class FeishuExportInput(BaseModel):
     content: str = Field(min_length=1, max_length=500000)
 
 
+class XiaoyuzhouPhoneInput(BaseModel):
+    phone: str = Field(pattern=r'^\d{6,20}$')
+    area_code: str = Field(default='+86', pattern=r'^\+\d{1,4}$')
+
+
+class XiaoyuzhouLoginInput(XiaoyuzhouPhoneInput):
+    code: str = Field(min_length=4, max_length=12, pattern=r'^\d+$')
+
+
 class SkillInput(BaseModel):
     clean: str = Field(min_length=20, max_length=50000)
     simple: str = Field(min_length=20, max_length=50000)
@@ -398,9 +407,16 @@ def _xyz_transcript(url: str) -> dict:
     match = _XYZ.search(url)
     exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
     if not match or not exe:
-        raise ValueError('当前服务器尚未连接小宇宙官方 transcript 工具；可上传导出文字或录音。')
+        raise ValueError('小宇宙 transcript 组件未安装，请重新构建后端镜像。')
+    _ensure_xyz_credentials()
     episode = match.group(1)
-    detail = json.loads(_run([exe, 'episode', episode]) or '{}')
+    try:
+        detail = json.loads(_run([exe, 'episode', episode]) or '{}')
+    except ValueError as exc:
+        message = str(exc)
+        if any(marker in message.lower() for marker in ('auth', 'login', 'token', '401', '403')):
+            raise ValueError('小宇宙登录已失效，请先到“音频整理”重新连接小宇宙。') from exc
+        raise
     def media_id(value):
         if isinstance(value, dict):
             for key in ('transcript_media_id', 'transcriptMediaId', 'media_id', 'mediaId'):
@@ -415,19 +431,50 @@ def _xyz_transcript(url: str) -> dict:
         return None
     mid = media_id(detail)
     if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
-    # Prefer timed captions for both the audio desk and the independent site.
-    # Older xyz builds only support plain output, so keep that as a fallback.
+    # The pinned xyz client renders official captions with timestamps. Keep a
+    # plain fallback for episodes whose older transcript payload has no timing.
     text = ''
-    for caption_format in ('vtt', 'srt'):
-        try:
-            timed = _run([exe, 'transcript', episode, '--media-id', mid, '--format', caption_format, '--text'])
-            text = _vtt_text(timed)
-            if text: break
-        except ValueError:
-            continue
+    try:
+        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'timestamped', '--text'])
+    except ValueError:
+        pass
     if not text:
         text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
     return {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
+
+
+def _ensure_xyz_credentials() -> None:
+    """Materialize server env credentials for the read-only xyz client."""
+    state = Path(os.environ.get('XIAOYUZHOU_STATE_DIR', '/data')).expanduser() / 'xiaoyuzhou'
+    token_file = state / 'token.json'
+    if token_file.is_file():
+        return
+    access = os.environ.get('XIAOYUZHOU_ACCESS_TOKEN', '').strip()
+    refresh = os.environ.get('XIAOYUZHOU_REFRESH_TOKEN', '').strip()
+    device = os.environ.get('XIAOYUZHOU_DEVICE_ID', '').strip()
+    if not (access and refresh and device):
+        raise ValueError('小宇宙 transcript 尚未配置。请在服务器环境变量填写 access token、refresh token 和 device id。')
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {'access_token': access, 'refresh_token': refresh, 'device_id': device}
+    temporary = token_file.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    temporary.chmod(0o600)
+    temporary.replace(token_file)
+
+
+def _xyz_token_path() -> Path:
+    return Path(os.environ.get('XIAOYUZHOU_STATE_DIR', '/data')).expanduser() / 'xiaoyuzhou' / 'token.json'
+
+
+def _xyz_credentials_present() -> bool:
+    token_file = _xyz_token_path()
+    if not token_file.is_file():
+        return False
+    try:
+        payload = json.loads(token_file.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return False
+    return all(str(payload.get(key) or '').strip() for key in ('access_token', 'refresh_token', 'device_id'))
 
 
 def _vtt_text(raw: str) -> str:
@@ -582,16 +629,44 @@ def skills(): return {name: _skill(name) for name in DEFAULT_SKILLS}
 
 @router.get('/status')
 def source_status(request: Request):
+    xyz_installed = bool(_executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN'))
     return {
         'feishu_app_configured': _feishu_app_configured(),
         'feishu_user_configured': _feishu_user_configured(),
         'skills_configured': all(_skill_customized(name) for name in DEFAULT_SKILLS),
         'youtube_ready': bool(_executable('yt-dlp', 'YTDLP_BIN')),
-        'xiaoyuzhou_ready': bool(_executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')),
+        'xiaoyuzhou_ready': xyz_installed,
+        'xiaoyuzhou_connected': xyz_installed and _xyz_credentials_present(),
         'feishu_export_folder': os.environ.get('FEISHU_EXPORT_FOLDER_NAME', '沟通记录').strip() or '沟通记录',
         'feishu_oauth_available': _feishu_app_configured(),
         'feishu_oauth_redirect_uri': _feishu_oauth_redirect_uri(request) if _feishu_app_configured() else '',
     }
+
+
+@router.post('/xiaoyuzhou/send-code')
+def send_xiaoyuzhou_code(body: XiaoyuzhouPhoneInput):
+    exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
+    if not exe:
+        raise HTTPException(503, '小宇宙 transcript 组件未安装，请重新构建后端镜像。')
+    try:
+        _run([exe, 'send-code', body.phone, '--area-code', body.area_code], timeout=60)
+        return {'ok': True}
+    except (ValueError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(422, f'验证码发送失败：{str(exc)[:300]}') from exc
+
+
+@router.post('/xiaoyuzhou/login')
+def login_xiaoyuzhou(body: XiaoyuzhouLoginInput):
+    exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
+    if not exe:
+        raise HTTPException(503, '小宇宙 transcript 组件未安装，请重新构建后端镜像。')
+    try:
+        _run([exe, 'login', body.phone, body.code, '--area-code', body.area_code], timeout=60)
+        if not _xyz_credentials_present():
+            raise ValueError('登录完成，但服务器没有保存登录凭证')
+        return {'ok': True}
+    except (ValueError, subprocess.TimeoutExpired) as exc:
+        raise HTTPException(422, f'小宇宙连接失败：{str(exc)[:300]}') from exc
 
 
 @router.get('/feishu/connect')

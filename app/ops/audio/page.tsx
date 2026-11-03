@@ -8,7 +8,7 @@ type SourceMode = 'link' | 'text' | 'file';
 type Tier = 'transcript' | 'cleaned' | 'simple';
 type Model = { id: string; name: string; tasks?: string[]; recommended?: boolean };
 type Skills = { clean: string; simple: string; article: string };
-type SourceStatus = { feishu_app_configured: boolean; feishu_user_configured: boolean; skills_configured: boolean; feishu_export_folder?: string; feishu_oauth_available?: boolean; feishu_oauth_redirect_uri?: string };
+type SourceStatus = { feishu_app_configured: boolean; feishu_user_configured: boolean; skills_configured: boolean; xiaoyuzhou_ready?: boolean; xiaoyuzhou_connected?: boolean; feishu_export_folder?: string; feishu_oauth_available?: boolean; feishu_oauth_redirect_uri?: string };
 type Project = {
   id?: string; revision: number; title: string; source_url: string; source_kind: string;
   transcript: string; cleaned: string; simple: string; article_title: string;
@@ -45,6 +45,10 @@ export default function AudioStudio() {
   const [skills, setSkills] = useState<Skills>({ clean: '', simple: '', article: '' });
   const [sourceStatus, setSourceStatus] = useState<SourceStatus>({ feishu_app_configured: false, feishu_user_configured: false, skills_configured: false });
   const [rulesOpen, setRulesOpen] = useState(false);
+  const [xiaoyuzhouOpen, setXiaoyuzhouOpen] = useState(false);
+  const [xiaoyuzhouPhone, setXiaoyuzhouPhone] = useState('');
+  const [xiaoyuzhouCode, setXiaoyuzhouCode] = useState('');
+  const [xiaoyuzhouCodeSent, setXiaoyuzhouCodeSent] = useState(false);
   const [visibleTiers, setVisibleTiers] = useState<Tier[]>(['transcript', 'cleaned']);
   const [correction, setCorrection] = useState('');
   const [correctionModel, setCorrectionModel] = useState('');
@@ -290,6 +294,29 @@ export default function AudioStudio() {
     });
   }
 
+  async function sendXiaoyuzhouCode() {
+    const phone = xiaoyuzhouPhone.replace(/\D/g, '');
+    if (!phone) { setError('请填写接收验证码的小宇宙手机号。'); return; }
+    await run('xiaoyuzhou-code', async () => {
+      await api('/audio-studio/xiaoyuzhou/send-code', { method: 'POST', body: JSON.stringify({ phone, area_code: '+86' }) });
+      setXiaoyuzhouCodeSent(true);
+      setNotice('验证码已发送，请查看手机短信。');
+    });
+  }
+
+  async function connectXiaoyuzhou() {
+    const phone = xiaoyuzhouPhone.replace(/\D/g, '');
+    const code = xiaoyuzhouCode.replace(/\D/g, '');
+    if (!phone || !code) { setError('请填写手机号和短信验证码。'); return; }
+    await run('xiaoyuzhou-login', async () => {
+      await api('/audio-studio/xiaoyuzhou/login', { method: 'POST', body: JSON.stringify({ phone, code, area_code: '+86' }) });
+      setSourceStatus((current) => ({ ...current, xiaoyuzhou_connected: true }));
+      setXiaoyuzhouOpen(false);
+      setXiaoyuzhouCode('');
+      setNotice('小宇宙已连接，现在可以直接读取节目官方 transcript。');
+    });
+  }
+
   const tierMeta: Record<Tier, { label: string; value: string; placeholder: string }> = {
     transcript: { label: '原版', value: project.transcript, placeholder: '保留抓取到的时间轴、说话人和原始文字。' },
     cleaned: { label: '清洗版', value: project.cleaned, placeholder: '去除无意义重复，并标出不确定片段。' },
@@ -317,6 +344,7 @@ export default function AudioStudio() {
       <div className="connection-cards" aria-label="必要配置">
         <div className={models.length ? 'ready' : 'pending'}><span>AI</span><strong>{models.length ? 'AI API 已配置' : 'AI API 未配置'}</strong><small>{models.length ? `${models.length} 个指定模型可选，每次由你决定` : '请在服务器 env 配置 Modelink API Key'}</small></div>
         <div className={sourceStatus.feishu_user_configured ? 'ready' : 'pending'}><span>FS</span><strong>{sourceStatus.feishu_user_configured ? '机器人应用的用户身份已连接' : '机器人应用的用户身份未连接'}</strong><small>{sourceStatus.feishu_user_configured ? `私有妙记与文档导出使用该用户身份；导出到“${sourceStatus.feishu_export_folder || '沟通记录'}”` : sourceStatus.feishu_app_configured ? '连接后可读取私有妙记并以用户身份导出文档' : '请先在服务器 env 配置机器人 App ID 与 App Secret'}</small>{!sourceStatus.feishu_user_configured && sourceStatus.feishu_oauth_available && <button onClick={connectFeishu} disabled={busy !== ''}>{busy === 'feishu-connect' ? '连接中' : '连接机器人用户身份'} →</button>}</div>
+        <div className={sourceStatus.xiaoyuzhou_connected ? 'ready' : 'pending'}><span>XYZ</span><strong>{sourceStatus.xiaoyuzhou_connected ? '小宇宙 transcript 已连接' : sourceStatus.xiaoyuzhou_ready ? '小宇宙尚未连接' : '小宇宙组件未安装'}</strong><small>{sourceStatus.xiaoyuzhou_connected ? '粘贴节目链接即可读取带时间轴的官方 transcript' : sourceStatus.xiaoyuzhou_ready ? '用小宇宙手机号和短信验证码完成一次连接' : '重新构建后端镜像后即可连接'}</small>{sourceStatus.xiaoyuzhou_ready && <button onClick={() => setXiaoyuzhouOpen(true)}>{sourceStatus.xiaoyuzhou_connected ? '重新连接' : '连接小宇宙'} →</button>}</div>
         <div className={sourceStatus.skills_configured ? 'ready' : 'initial'}><span>SK</span><strong>{sourceStatus.skills_configured ? '生成规则已配置' : '正在使用初始规则'}</strong><small>清洗、简版与稿件规则可以随时修改</small><button onClick={() => setRulesOpen(true)}>{sourceStatus.skills_configured ? '修改' : '配置'} →</button></div>
       </div>
       {(notice || error || modelNotice) && <div className={`operation-notice audio-page-notice ${error ? 'error' : 'success'}`} role="status">{error || notice || modelNotice}</div>}
@@ -344,6 +372,7 @@ export default function AudioStudio() {
       <section className="article-workspace"><header><div><p className="eyebrow">03 / ARTICLE</p><h2>稿件单独生成</h2><p>只使用已确认的清洗版，按稿件规则再调用一次模型。推荐使用 Opus 4.6 或 Gemini 3.8 Flash。</p></div><div className="article-generate-controls"><label>稿件模型<select value={selectedArticleModel} onChange={(e) => setArticleModel(e.target.value)}><option value="">选择模型</option>{articleModels.map((item) => <option key={item.id} value={item.id}>{item.recommended ? `推荐 · ${item.name}` : item.name}</option>)}</select></label><button className="primary-button" disabled={!project.cleaned || !selectedArticleModel || busy !== ''} onClick={generateArticle}>{busy === 'article' ? '稿件生成中…' : '生成稿件'}</button></div></header>{project.article_body&&<div className="article-fields"><label>标题<input value={project.article_title} onChange={(e) => update({ article_title: e.target.value })} /></label><label>摘要<textarea value={project.article_summary} onChange={(e) => update({ article_summary: e.target.value })} /></label><label>正文<textarea className="article-body-field" value={project.article_body} onChange={(e) => update({ article_body: e.target.value })} /></label><div className="article-actions"><button className="secondary-button" onClick={() => copy([project.article_title, project.article_summary, project.article_body].filter(Boolean).join('\n\n'))}>复制稿件</button><button className="primary-button" disabled={!sourceStatus.feishu_user_configured || busy !== ''} onClick={() => exportFeishu('稿件', [project.article_title, project.article_summary, project.article_body].filter(Boolean).join('\n\n'))}>{busy === 'feishu' ? '导出中…' : '导出飞书文档 ↗'}</button></div></div>}</section>
 
       {rulesOpen && <div className="skill-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setRulesOpen(false); }}><section className="audio-skills-workspace" role="dialog" aria-modal="true" aria-labelledby="skill-title"><header><div><p className="eyebrow">AUDIO EDITORIAL SKILLS</p><h2 id="skill-title">生成规则</h2></div><button className="text-button" onClick={() => setRulesOpen(false)}>关闭</button></header><p>三套规则都从你提供的 Interview Transcript Editor 拆分而来，并按顺序衔接：清洗版是事实底稿；简版回看原稿并保留时间轴；稿件同时使用前两版。</p><div className="skill-rule-grid"><label>清洗版 · 中文可读版<textarea value={skills.clean} onChange={(e) => setSkills((s) => ({ ...s, clean: e.target.value }))} /></label><label>简版 · 个人使用版 / 时间轴<textarea value={skills.simple} onChange={(e) => setSkills((s) => ({ ...s, simple: e.target.value }))} /></label><label className="article-skill-rule">稿件版 · 极客公园访谈稿<textarea value={skills.article} onChange={(e) => setSkills((s) => ({ ...s, article: e.target.value }))} /></label></div><button className="primary-button full" onClick={saveSkills} disabled={busy !== ''}>{busy === 'skills' ? '保存中…' : '保存全部规则'}</button></section></div>}
+      {xiaoyuzhouOpen && <div className="skill-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setXiaoyuzhouOpen(false); }}><section className="xiaoyuzhou-connect" role="dialog" aria-modal="true" aria-labelledby="xiaoyuzhou-title"><header><div><p className="eyebrow">XIAOYUZHOU TRANSCRIPT</p><h2 id="xiaoyuzhou-title">连接小宇宙</h2></div><button className="text-button" onClick={() => setXiaoyuzhouOpen(false)}>关闭</button></header><p>用小宇宙账号完成一次短信验证。连接信息保存在服务器，之后粘贴节目链接即可读取带时间轴的官方 transcript。</p><label>手机号<input inputMode="tel" autoComplete="tel" placeholder="中国大陆手机号" value={xiaoyuzhouPhone} onChange={(event) => setXiaoyuzhouPhone(event.target.value)} /></label><div className="xiaoyuzhou-code-row"><label>短信验证码<input inputMode="numeric" autoComplete="one-time-code" placeholder="验证码" value={xiaoyuzhouCode} onChange={(event) => setXiaoyuzhouCode(event.target.value)} /></label><button className="secondary-button" onClick={sendXiaoyuzhouCode} disabled={busy !== ''}>{busy === 'xiaoyuzhou-code' ? '发送中…' : xiaoyuzhouCodeSent ? '重新发送' : '获取验证码'}</button></div><button className="primary-button full" onClick={connectXiaoyuzhou} disabled={busy !== '' || !xiaoyuzhouPhone.trim() || !xiaoyuzhouCode.trim()}>{busy === 'xiaoyuzhou-login' ? '连接中…' : '连接并保存'}</button></section></div>}
     </section>}
   </main>;
 }

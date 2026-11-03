@@ -143,6 +143,9 @@ def test_import_url_text_only_and_redirect_boundary(client, monkeypatch):
     original = httpx.AsyncClient
     monkeypatch.setattr(extract.socket, 'getaddrinfo', lambda host, port, *a, **kw: [(extract.socket.AF_INET,extract.socket.SOCK_STREAM,6,'',('127.0.0.1' if host in ('localhost','127.0.0.1') else '93.184.216.34',port))])
     seen = []
+    async def wechat(_url):
+        return {'title':'文章标题','summary':'','body':'可以翻译的文字。'*15,'brand':'intheloop','source_account':'In The Loop'}
+    monkeypatch.setattr(extract, 'extract_wechat_url', wechat)
     def handler(request):
         seen.append(str(request.url))
         assert request.headers['host'] in ('mp.weixin.qq.com','geekpark.net','figure.ai')
@@ -153,13 +156,34 @@ def test_import_url_text_only_and_redirect_boundary(client, monkeypatch):
     r = client.post('/api/v1/atlas/import-url', json={'url':'https://mp.weixin.qq.com/s/abc'})
     assert r.status_code == 200
     assert r.json()['title'] == '文章标题'
-    assert 'bad()' not in r.json()['body']
-    assert len(seen) == 1
+    assert r.json()['source_account'] == 'In The Loop'
+    assert len(seen) == 0
     assert client.post('/api/v1/atlas/import-url',json={'url':'https://geekpark.net/redirect'}).status_code == 422
-    assert len(seen) == 2
+    assert len(seen) == 1
     assert client.post('/api/v1/atlas/import-url',json={'url':'http://localhost/private'}).status_code == 422
-    assert len(seen) == 2
+    assert len(seen) == 1
     assert client.post('/api/v1/atlas/import-url',json={'url':'https://figure.ai/news/example'}).status_code == 200
+    assert len(seen) == 2
+
+
+def test_import_geekpark_uses_public_api_when_article_page_blocks_crawlers(client, monkeypatch):
+    import httpx
+    from app.modules.atlas import extract
+    original = httpx.AsyncClient
+    def handler(request):
+        assert str(request.url) == 'https://mainssl.geekpark.net/api/v1/posts/373252'
+        return httpx.Response(200, request=request, json={'post': {
+            'title': '极客公园原文标题',
+            'abstract': '原文摘要',
+            'content': '<p>' + ('完整文章正文。' * 15) + '</p><script>bad()</script>',
+            'authors': [{'nickname': '作者甲'}],
+        }})
+    monkeypatch.setattr(extract.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    response = client.post('/api/v1/atlas/import-url', json={'url':'https://www.geekpark.net/news/373252'})
+    assert response.status_code == 200
+    assert response.json()['title'] == '极客公园原文标题'
+    assert response.json()['source_account'] == 'In The Loop'
+    assert 'bad()' not in response.json()['body']
 
 def test_tag_graph_visibility_and_cycle_validation(client):
     root = create(client,'tags',{'slug':'body','name_zh':'机器人本体','dimension':'form','map_visible':True})

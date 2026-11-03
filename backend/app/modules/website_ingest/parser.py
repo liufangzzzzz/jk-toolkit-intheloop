@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import io
 import re
 import shutil
@@ -13,6 +14,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 import mammoth
 from bs4 import BeautifulSoup, Tag
+from PIL import Image
 import tinycss2
 
 from .assets import read_asset, save_asset
@@ -64,6 +66,39 @@ def _short_abstract(value: str, *, limit: int = 150) -> str:
         return opening[:boundary + 1].strip()
     space = opening.rfind(" ")
     return opening[:space if space >= 60 else limit].rstrip("，,；; ") + "。"
+
+
+def _white_cover_asset() -> str:
+    """Small, neutral fallback cover for pasted text without any media."""
+    output = io.BytesIO()
+    Image.new("RGB", (1200, 360), (255, 255, 255)).save(output, format="PNG", optimize=True)
+    return save_asset(output.getvalue(), "image/png")
+
+
+def parse_pasted_text(raw: str) -> WebsiteImportArticle:
+    text = (raw or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+    if len(text) < 20:
+        raise ValueError("请粘贴完整文章，至少包含标题和一段正文")
+    lines = [line.strip() for line in text.splitlines()]
+    first = next((index for index, line in enumerate(lines) if line), 0)
+    title = lines[first].lstrip("# ").strip()[:180]
+    body_lines = lines[first + 1:]
+    body_text = "\n".join(body_lines).strip()
+    if not body_text:
+        body_text = text
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", body_text) if part.strip()]
+    content_html = "".join(f"<p>{html.escape(part).replace(chr(10), '<br>')}</p>" for part in paragraphs)
+    cleaned = sanitize_fragment(content_html)
+    abstract = _short_abstract(_plain_text(cleaned))
+    return WebsiteImportArticle(
+        title=title or "未命名文章",
+        abstract=abstract,
+        content_html=cleaned,
+        tags=suggest_tags(title, abstract, cleaned),
+        cover_asset=_white_cover_asset(),
+        source_type="text",
+        source_ref="pasted-text",
+    )
 
 
 def _safe_http_url(raw: str, *, base_url: str = "") -> str:
@@ -153,7 +188,7 @@ async def _download_image(client: httpx.AsyncClient, url: str) -> tuple[str, str
         return url, "", str(exc)[:160] or "图片下载失败"
 
 
-async def parse_wechat_url(source_url: str) -> WebsiteImportArticle:
+async def parse_wechat_url(source_url: str, *, include_images: bool = True) -> WebsiteImportArticle:
     parsed_url = urlparse(source_url.strip())
     if parsed_url.scheme not in {"http", "https"} or (parsed_url.hostname or "").lower() not in _WECHAT_HOSTS:
         raise ValueError("请输入 mp.weixin.qq.com 的已发布文章链接")
@@ -174,40 +209,51 @@ async def parse_wechat_url(source_url: str) -> WebsiteImportArticle:
             title = str((soup.find("meta", attrs={"property": "og:title"}) or {}).get("content") or "").strip()
         if not title:
             raise ValueError("没有读取到微信文章标题")
+        account_node = soup.select_one("#js_name")
+        source_account = account_node.get_text(" ", strip=True) if account_node else ""
         description_meta = soup.find("meta", attrs={"name": "description"})
         abstract = str(description_meta.get("content") if description_meta else "").strip()
         image_urls: list[str] = []
         image_nodes: list[Tag] = []
-        for image in content.find_all("img"):
-            raw_src = str(image.get("data-src") or image.get("src") or "")
-            resolved = _safe_http_url(raw_src, base_url=str(response.url))
-            if resolved:
-                image_urls.append(resolved)
-                image_nodes.append(image)
-        unique_urls = list(dict.fromkeys(image_urls))
-        downloaded = await asyncio.gather(*[_download_image(client, url) for url in unique_urls])
-        image_map = {url: asset for url, asset, _error in downloaded if asset}
-        error_map = {url: error for url, asset, error in downloaded if not asset}
+        unique_urls: list[str] = []
+        image_map: dict[str, str] = {}
         image_issues: list[WebsiteImageIssue] = []
-        for index, (image, original_url) in enumerate(zip(image_nodes, image_urls), start=1):
-            asset = image_map.get(original_url)
-            if asset:
-                image["src"] = asset
-                image["data-import-index"] = str(index)
-            else:
-                label = str(image.get("alt") or "").strip() or f"第 {index} 张图片"
-                image_issues.append(WebsiteImageIssue(
-                    index=index,
-                    label=label[:100],
-                    source_url=original_url,
-                    message=error_map.get(original_url) or "图片下载失败",
-                ))
+        cover_asset = ""
+        if include_images:
+            for image in content.find_all("img"):
+                raw_src = str(image.get("data-src") or image.get("src") or "")
+                resolved = _safe_http_url(raw_src, base_url=str(response.url))
+                if resolved:
+                    image_urls.append(resolved)
+                    image_nodes.append(image)
+            unique_urls = list(dict.fromkeys(image_urls))
+            downloaded = await asyncio.gather(*[_download_image(client, url) for url in unique_urls])
+            image_map = {url: asset for url, asset, _error in downloaded if asset}
+            error_map = {url: error for url, asset, error in downloaded if not asset}
+            for index, (image, original_url) in enumerate(zip(image_nodes, image_urls), start=1):
+                asset = image_map.get(original_url)
+                if asset:
+                    image["src"] = asset
+                    image["data-import-index"] = str(index)
+                else:
+                    label = str(image.get("alt") or "").strip() or f"第 {index} 张图片"
+                    image_issues.append(WebsiteImageIssue(
+                        index=index,
+                        label=label[:100],
+                        source_url=original_url,
+                        message=error_map.get(original_url) or "图片下载失败",
+                    ))
+                    image.decompose()
+            cover_meta = soup.find("meta", attrs={"property": "og:image"})
+            cover_url = _safe_http_url(str(cover_meta.get("content") if cover_meta else ""), base_url=str(response.url))
+            cover_asset = image_map.get(cover_url, "")
+            if cover_url and not cover_asset:
+                _url, cover_asset, _error = await _download_image(client, cover_url)
+        else:
+            # The independent site imports text only. Avoid downloading and
+            # persisting every WeChat image merely to produce an English draft.
+            for image in content.find_all("img"):
                 image.decompose()
-        cover_meta = soup.find("meta", attrs={"property": "og:image"})
-        cover_url = _safe_http_url(str(cover_meta.get("content") if cover_meta else ""), base_url=str(response.url))
-        cover_asset = image_map.get(cover_url, "")
-        if cover_url and not cover_asset:
-            _url, cover_asset, _error = await _download_image(client, cover_url)
     warnings: list[str] = []
     failed_images = len(unique_urls) - len(image_map)
     if failed_images:
@@ -229,6 +275,7 @@ async def parse_wechat_url(source_url: str) -> WebsiteImportArticle:
         cover_asset=cover_asset,
         source_type="wechat_url",
         source_ref=source_url.strip(),
+        source_account=source_account[:180],
         warnings=warnings,
         image_issues=image_issues,
     )
@@ -361,14 +408,13 @@ def render_preview(article: WebsiteImportArticle) -> str:
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
         'body{margin:0;padding:28px;font:16px/1.75 Arial,"PingFang SC",sans-serif;color:#202020}'
-        'article{max-width:760px;margin:auto}article>h1{font-size:28px;line-height:1.35;margin:0 0 30px}'
+        'article{max-width:760px;margin:auto}'
         '#website-content h1,#website-content h2{font-size:18px!important;line-height:1.55!important;margin:28px 0 20px}'
         '#website-content h3,#website-content h4{font-size:17px!important;line-height:1.55!important}'
         '#website-content p{margin:0 0 20px}img{display:block;max-width:100%;height:auto;margin:24px auto}'
         'table{width:100%;border-collapse:collapse}'
         'td,th{padding:8px;border:1px solid #ddd}blockquote{margin:20px 0;padding-left:18px;border-left:3px solid #111;color:#555}'
         '#website-content[contenteditable="true"]{outline:2px solid #a583ff;outline-offset:10px}'
-        '</style></head><body><article><h1>'
-        + article.title.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        + '</h1><div id="website-content">' + content + '</div></article></body></html>'
+        '</style></head><body><article><div id="website-content">'
+        + content + '</div></article></body></html>'
     )
