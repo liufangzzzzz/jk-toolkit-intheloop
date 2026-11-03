@@ -55,6 +55,8 @@ docker compose up -d --force-recreate
 
 小宇宙 transcript 组件已经固定安装在后端镜像中，并优先输出带时间轴的逐字稿。在“音频整理”配置区点击“连接小宇宙”，使用小宇宙 App 扫码确认即可完成一次连接。服务会把登录凭证保存到持久数据卷 `/data/xiaoyuzhou/token.json`，容器更新不会丢失；登录过期时可在同一位置重新连接。三个 `XIAOYUZHOU_*_TOKEN` 环境变量只作为部署迁移时的备用方式，不要求日常填写。不要把 token 文件或真实 token 提交到仓库。
 
+同一期节目首次读取后会永久缓存在 `/data/xiaoyuzhou/transcripts/`，重复编辑不再请求小宇宙。未缓存节目默认串行读取、至少间隔 8 秒且每小时最多 20 期；可通过 `XIAOYUZHOU_MIN_FETCH_INTERVAL_SECONDS` 和 `XIAOYUZHOU_MAX_NEW_TRANSCRIPTS_PER_HOUR` 收紧，但不建议放宽。该接口不是公开的第三方 API，频率保护只能降低账号风控风险，不能替代平台书面授权。
+
 独立官网服务器只需：
 
 ```dotenv

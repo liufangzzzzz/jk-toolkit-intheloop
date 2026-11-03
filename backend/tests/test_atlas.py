@@ -602,6 +602,31 @@ def test_audio_studio_connects_xiaoyuzhou_with_qrcode(client, monkeypatch, tmp_p
     assert token['device_id']
 
 
+def test_audio_studio_caches_xiaoyuzhou_transcript_after_first_read(monkeypatch, tmp_path):
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('XIAOYUZHOU_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('XIAOYUZHOU_MIN_FETCH_INTERVAL_SECONDS', '0')
+    monkeypatch.setattr(audio_studio, '_executable', lambda *_args: '/usr/local/bin/xyz')
+    monkeypatch.setattr(audio_studio, '_ensure_xyz_credentials', lambda: None)
+    audio_studio._xiaoyuzhou_recent_fetches.clear()
+    calls = []
+
+    def run(command, timeout=120):
+        calls.append(command)
+        if command[1] == 'episode':
+            return '{"title":"测试节目","transcript_media_id":"media-one"}'
+        return '[00:01] 第一句\n[00:08] 第二句'
+
+    monkeypatch.setattr(audio_studio, '_run', run)
+    url = 'https://www.xiaoyuzhoufm.com/episode/1234567890abcdef12345678'
+    first = audio_studio._xyz_transcript(url)
+    second = audio_studio._xyz_transcript(url)
+    assert first['transcript'] == second['transcript']
+    assert second['cached'] is True
+    assert len(calls) == 2
+    assert (tmp_path/'xiaoyuzhou'/'transcripts'/'1234567890abcdef12345678.json').is_file()
+
+
 def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, monkeypatch):
     from app.modules.audio_studio import routes as audio_studio
     monkeypatch.setenv('FEISHU_APP_ID', 'app-id')

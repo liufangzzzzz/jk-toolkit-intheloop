@@ -11,6 +11,7 @@ import shutil
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -407,6 +408,69 @@ def _executable(name: str, env_name: str = '') -> str | None:
     return None
 
 
+_xiaoyuzhou_fetch_lock = threading.Lock()
+_xiaoyuzhou_recent_fetches: list[float] = []
+
+
+def _xiaoyuzhou_cache_path(episode: str) -> Path:
+    return (
+        Path(os.environ.get('XIAOYUZHOU_STATE_DIR', '/data')).expanduser()
+        / 'xiaoyuzhou'
+        / 'transcripts'
+        / f'{episode}.json'
+    )
+
+
+def _read_xiaoyuzhou_cache(episode: str) -> dict | None:
+    path = _xiaoyuzhou_cache_path(episode)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get('transcript') or '').strip():
+        return None
+    return {
+        'title': str(payload.get('title') or ''),
+        'transcript': str(payload['transcript']),
+        'source_kind': 'xiaoyuzhou',
+        'needs_ai': False,
+        'cached': True,
+    }
+
+
+def _write_xiaoyuzhou_cache(episode: str, result: dict) -> None:
+    path = _xiaoyuzhou_cache_path(episode)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        'episode_id': episode,
+        'title': str(result.get('title') or ''),
+        'transcript': str(result.get('transcript') or ''),
+        'saved_at': time.time(),
+    }
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def _limit_xiaoyuzhou_fetches() -> None:
+    """Keep authenticated reads human-paced and reject bulk extraction."""
+    now = time.monotonic()
+    one_hour_ago = now - 3600
+    _xiaoyuzhou_recent_fetches[:] = [value for value in _xiaoyuzhou_recent_fetches if value >= one_hour_ago]
+    limit = max(1, min(60, int(os.environ.get('XIAOYUZHOU_MAX_NEW_TRANSCRIPTS_PER_HOUR', '20'))))
+    if len(_xiaoyuzhou_recent_fetches) >= limit:
+        raise ValueError(f'为保护小宇宙账号，每小时最多首次读取 {limit} 期节目；已缓存的节目不受影响，请稍后再试。')
+    minimum_interval = max(0, min(60, int(os.environ.get('XIAOYUZHOU_MIN_FETCH_INTERVAL_SECONDS', '8'))))
+    if _xiaoyuzhou_recent_fetches:
+        delay = minimum_interval - (now - _xiaoyuzhou_recent_fetches[-1])
+        if delay > 0:
+            time.sleep(delay)
+    _xiaoyuzhou_recent_fetches.append(time.monotonic())
+
+
 def _xyz_transcript(url: str) -> dict:
     match = _XYZ.search(url)
     exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
@@ -414,37 +478,49 @@ def _xyz_transcript(url: str) -> dict:
         raise ValueError('小宇宙 transcript 组件未安装，请重新构建后端镜像。')
     _ensure_xyz_credentials()
     episode = match.group(1)
-    try:
-        detail = json.loads(_run([exe, 'episode', episode]) or '{}')
-    except ValueError as exc:
-        message = str(exc)
-        if any(marker in message.lower() for marker in ('auth', 'login', 'token', '401', '403')):
-            raise ValueError('小宇宙登录已失效，请先到“音频整理”重新连接小宇宙。') from exc
-        raise
-    def media_id(value):
-        if isinstance(value, dict):
-            for key in ('transcript_media_id', 'transcriptMediaId', 'media_id', 'mediaId'):
-                if isinstance(value.get(key), str) and value[key]: return value[key]
-            for child in value.values():
-                found = media_id(child)
-                if found: return found
-        if isinstance(value, list):
-            for child in value:
-                found = media_id(child)
-                if found: return found
-        return None
-    mid = media_id(detail)
-    if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
-    # The pinned xyz client renders official captions with timestamps. Keep a
-    # plain fallback for episodes whose older transcript payload has no timing.
-    text = ''
-    try:
-        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'timestamped', '--text'])
-    except ValueError:
-        pass
-    if not text:
-        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
-    return {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
+    cached = _read_xiaoyuzhou_cache(episode)
+    if cached:
+        return cached
+    # Multiple browser tabs must not turn one editorial action into parallel
+    # authenticated reads. Check the cache again after entering the lock.
+    with _xiaoyuzhou_fetch_lock:
+        cached = _read_xiaoyuzhou_cache(episode)
+        if cached:
+            return cached
+        _limit_xiaoyuzhou_fetches()
+        try:
+            detail = json.loads(_run([exe, 'episode', episode]) or '{}')
+        except ValueError as exc:
+            message = str(exc)
+            if any(marker in message.lower() for marker in ('auth', 'login', 'token', '401', '403')):
+                raise ValueError('小宇宙登录已失效，请先到“音频整理”重新连接小宇宙。') from exc
+            raise
+        def media_id(value):
+            if isinstance(value, dict):
+                for key in ('transcript_media_id', 'transcriptMediaId', 'media_id', 'mediaId'):
+                    if isinstance(value.get(key), str) and value[key]: return value[key]
+                for child in value.values():
+                    found = media_id(child)
+                    if found: return found
+            if isinstance(value, list):
+                for child in value:
+                    found = media_id(child)
+                    if found: return found
+            return None
+        mid = media_id(detail)
+        if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
+        # The pinned xyz client renders official captions with timestamps. Keep
+        # a plain fallback for episodes whose older payload has no timing.
+        text = ''
+        try:
+            text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'timestamped', '--text'])
+        except ValueError:
+            pass
+        if not text:
+            text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
+        result = {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
+        _write_xiaoyuzhou_cache(episode, result)
+        return result
 
 
 def _ensure_xyz_credentials() -> None:
