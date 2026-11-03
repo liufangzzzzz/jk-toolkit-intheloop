@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import io
 import json
 import os
 import re
@@ -9,9 +11,11 @@ import shutil
 import secrets
 import subprocess
 import tempfile
+import threading
 import time
+import uuid
 from pathlib import Path
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -78,13 +82,8 @@ class FeishuExportInput(BaseModel):
     content: str = Field(min_length=1, max_length=500000)
 
 
-class XiaoyuzhouPhoneInput(BaseModel):
-    phone: str = Field(pattern=r'^\d{6,20}$')
-    area_code: str = Field(default='+86', pattern=r'^\+\d{1,4}$')
-
-
-class XiaoyuzhouLoginInput(XiaoyuzhouPhoneInput):
-    code: str = Field(min_length=4, max_length=12, pattern=r'^\d+$')
+class XiaoyuzhouQrInput(BaseModel):
+    login_id: str = Field(min_length=20, max_length=200)
 
 
 class SkillInput(BaseModel):
@@ -114,6 +113,13 @@ def _feishu_oauth_redirect_uri(request: Request) -> str:
     if origin:
         return origin + '/api/v1/audio-studio/feishu/callback'
     return str(request.url_for('feishu_oauth_callback'))
+
+
+def _feishu_oauth_token_url() -> str:
+    return os.environ.get(
+        'FEISHU_OAUTH_TOKEN_URL',
+        'https://accounts.feishu.cn/oauth/v3/token',
+    ).strip()
 
 
 def _feishu_oauth_state() -> str:
@@ -185,9 +191,8 @@ async def _feishu_user_token(client: httpx.AsyncClient) -> str:
         if direct:
             return direct
         raise HTTPException(503, '飞书用户 refresh token 已配置，但还缺少 App ID 或 App Secret。')
-    api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
     try:
-        response = await client.post(api_base + '/authen/v2/oauth/token', json={
+        response = await client.post(_feishu_oauth_token_url(), json={
             'grant_type': 'refresh_token',
             'client_id': app_id,
             'client_secret': app_secret,
@@ -403,6 +408,69 @@ def _executable(name: str, env_name: str = '') -> str | None:
     return None
 
 
+_xiaoyuzhou_fetch_lock = threading.Lock()
+_xiaoyuzhou_recent_fetches: list[float] = []
+
+
+def _xiaoyuzhou_cache_path(episode: str) -> Path:
+    return (
+        Path(os.environ.get('XIAOYUZHOU_STATE_DIR', '/data')).expanduser()
+        / 'xiaoyuzhou'
+        / 'transcripts'
+        / f'{episode}.json'
+    )
+
+
+def _read_xiaoyuzhou_cache(episode: str) -> dict | None:
+    path = _xiaoyuzhou_cache_path(episode)
+    if not path.is_file():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict) or not str(payload.get('transcript') or '').strip():
+        return None
+    return {
+        'title': str(payload.get('title') or ''),
+        'transcript': str(payload['transcript']),
+        'source_kind': 'xiaoyuzhou',
+        'needs_ai': False,
+        'cached': True,
+    }
+
+
+def _write_xiaoyuzhou_cache(episode: str, result: dict) -> None:
+    path = _xiaoyuzhou_cache_path(episode)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        'episode_id': episode,
+        'title': str(result.get('title') or ''),
+        'transcript': str(result.get('transcript') or ''),
+        'saved_at': time.time(),
+    }
+    temporary = path.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    temporary.chmod(0o600)
+    temporary.replace(path)
+
+
+def _limit_xiaoyuzhou_fetches() -> None:
+    """Keep authenticated reads human-paced and reject bulk extraction."""
+    now = time.monotonic()
+    one_hour_ago = now - 3600
+    _xiaoyuzhou_recent_fetches[:] = [value for value in _xiaoyuzhou_recent_fetches if value >= one_hour_ago]
+    limit = max(1, min(60, int(os.environ.get('XIAOYUZHOU_MAX_NEW_TRANSCRIPTS_PER_HOUR', '20'))))
+    if len(_xiaoyuzhou_recent_fetches) >= limit:
+        raise ValueError(f'为保护小宇宙账号，每小时最多首次读取 {limit} 期节目；已缓存的节目不受影响，请稍后再试。')
+    minimum_interval = max(0, min(60, int(os.environ.get('XIAOYUZHOU_MIN_FETCH_INTERVAL_SECONDS', '8'))))
+    if _xiaoyuzhou_recent_fetches:
+        delay = minimum_interval - (now - _xiaoyuzhou_recent_fetches[-1])
+        if delay > 0:
+            time.sleep(delay)
+    _xiaoyuzhou_recent_fetches.append(time.monotonic())
+
+
 def _xyz_transcript(url: str) -> dict:
     match = _XYZ.search(url)
     exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
@@ -410,37 +478,49 @@ def _xyz_transcript(url: str) -> dict:
         raise ValueError('小宇宙 transcript 组件未安装，请重新构建后端镜像。')
     _ensure_xyz_credentials()
     episode = match.group(1)
-    try:
-        detail = json.loads(_run([exe, 'episode', episode]) or '{}')
-    except ValueError as exc:
-        message = str(exc)
-        if any(marker in message.lower() for marker in ('auth', 'login', 'token', '401', '403')):
-            raise ValueError('小宇宙登录已失效，请先到“音频整理”重新连接小宇宙。') from exc
-        raise
-    def media_id(value):
-        if isinstance(value, dict):
-            for key in ('transcript_media_id', 'transcriptMediaId', 'media_id', 'mediaId'):
-                if isinstance(value.get(key), str) and value[key]: return value[key]
-            for child in value.values():
-                found = media_id(child)
-                if found: return found
-        if isinstance(value, list):
-            for child in value:
-                found = media_id(child)
-                if found: return found
-        return None
-    mid = media_id(detail)
-    if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
-    # The pinned xyz client renders official captions with timestamps. Keep a
-    # plain fallback for episodes whose older transcript payload has no timing.
-    text = ''
-    try:
-        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'timestamped', '--text'])
-    except ValueError:
-        pass
-    if not text:
-        text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
-    return {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
+    cached = _read_xiaoyuzhou_cache(episode)
+    if cached:
+        return cached
+    # Multiple browser tabs must not turn one editorial action into parallel
+    # authenticated reads. Check the cache again after entering the lock.
+    with _xiaoyuzhou_fetch_lock:
+        cached = _read_xiaoyuzhou_cache(episode)
+        if cached:
+            return cached
+        _limit_xiaoyuzhou_fetches()
+        try:
+            detail = json.loads(_run([exe, 'episode', episode]) or '{}')
+        except ValueError as exc:
+            message = str(exc)
+            if any(marker in message.lower() for marker in ('auth', 'login', 'token', '401', '403')):
+                raise ValueError('小宇宙登录已失效，请先到“音频整理”重新连接小宇宙。') from exc
+            raise
+        def media_id(value):
+            if isinstance(value, dict):
+                for key in ('transcript_media_id', 'transcriptMediaId', 'media_id', 'mediaId'):
+                    if isinstance(value.get(key), str) and value[key]: return value[key]
+                for child in value.values():
+                    found = media_id(child)
+                    if found: return found
+            if isinstance(value, list):
+                for child in value:
+                    found = media_id(child)
+                    if found: return found
+            return None
+        mid = media_id(detail)
+        if not mid: raise ValueError('这期小宇宙节目没有返回官方 transcript。')
+        # The pinned xyz client renders official captions with timestamps. Keep
+        # a plain fallback for episodes whose older payload has no timing.
+        text = ''
+        try:
+            text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'timestamped', '--text'])
+        except ValueError:
+            pass
+        if not text:
+            text = _run([exe, 'transcript', episode, '--media-id', mid, '--format', 'plain', '--text'])
+        result = {'title': detail.get('title', ''), 'transcript': text, 'source_kind': 'xiaoyuzhou', 'needs_ai': False}
+        _write_xiaoyuzhou_cache(episode, result)
+        return result
 
 
 def _ensure_xyz_credentials() -> None:
@@ -453,7 +533,7 @@ def _ensure_xyz_credentials() -> None:
     refresh = os.environ.get('XIAOYUZHOU_REFRESH_TOKEN', '').strip()
     device = os.environ.get('XIAOYUZHOU_DEVICE_ID', '').strip()
     if not (access and refresh and device):
-        raise ValueError('小宇宙 transcript 尚未配置。请在服务器环境变量填写 access token、refresh token 和 device id。')
+        raise ValueError('小宇宙尚未连接。请先到“音频整理”顶部点击“连接小宇宙”，使用小宇宙 App 扫码完成一次连接。')
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {'access_token': access, 'refresh_token': refresh, 'device_id': device}
     temporary = token_file.with_suffix('.tmp')
@@ -475,6 +555,50 @@ def _xyz_credentials_present() -> bool:
     except (OSError, ValueError, TypeError):
         return False
     return all(str(payload.get(key) or '').strip() for key in ('access_token', 'refresh_token', 'device_id'))
+
+
+_XIAOYUZHOU_WEB_API = 'https://web-api.xiaoyuzhoufm.com'
+_XIAOYUZHOU_QR_CLIENT_ID = 'xyz-web'
+_XIAOYUZHOU_MIDWAY_APP_ID = 'v6worU4NnWyL'
+_xiaoyuzhou_qr_sessions: dict[str, dict] = {}
+
+
+def _xiaoyuzhou_web_headers() -> dict[str, str]:
+    return {
+        'accept': 'application/json, text/plain, */*',
+        'content-type': 'application/json;charset=UTF-8',
+        'origin': 'https://accounts.xiaoyuzhoufm.com',
+        'referer': 'https://accounts.xiaoyuzhoufm.com/login',
+        'x-jike-allow-app-token-in-cookie': 'true',
+        'x-midway-app-id': _XIAOYUZHOU_MIDWAY_APP_ID,
+        'user-agent': (
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) '
+            'AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        ),
+    }
+
+
+def _xiaoyuzhou_qr_data_url(value: str) -> str:
+    import qrcode
+    image = qrcode.make(value)
+    output = io.BytesIO()
+    image.save(output, format='PNG')
+    return 'data:image/png;base64,' + base64.b64encode(output.getvalue()).decode('ascii')
+
+
+def _save_xiaoyuzhou_credentials(access: str, refresh: str) -> None:
+    token_file = _xyz_token_path()
+    token_file.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    payload = {
+        'access_token': access,
+        'refresh_token': refresh,
+        'device_id': str(uuid.uuid4()),
+        'saved_at': time.time(),
+    }
+    temporary = token_file.with_suffix('.tmp')
+    temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding='utf-8')
+    temporary.chmod(0o600)
+    temporary.replace(token_file)
 
 
 def _vtt_text(raw: str) -> str:
@@ -643,30 +767,88 @@ def source_status(request: Request):
     }
 
 
-@router.post('/xiaoyuzhou/send-code')
-def send_xiaoyuzhou_code(body: XiaoyuzhouPhoneInput):
-    exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
-    if not exe:
+@router.post('/xiaoyuzhou/qrcode/create')
+def create_xiaoyuzhou_qrcode():
+    if not (_executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')):
         raise HTTPException(503, '小宇宙 transcript 组件未安装，请重新构建后端镜像。')
     try:
-        _run([exe, 'send-code', body.phone, '--area-code', body.area_code], timeout=60)
-        return {'ok': True}
-    except (ValueError, subprocess.TimeoutExpired) as exc:
-        raise HTTPException(422, f'验证码发送失败：{str(exc)[:300]}') from exc
+        with httpx.Client(timeout=15, follow_redirects=True, headers=_xiaoyuzhou_web_headers()) as client:
+            response = client.post(
+                _XIAOYUZHOU_WEB_API + '/v1/auth/qrcode/create',
+                json={'clientId': _XIAOYUZHOU_QR_CLIENT_ID},
+            )
+            payload = response.json() if response.content else {}
+            qr_id = str(payload.get('id') or '').strip()
+            qr_url = str(payload.get('url') or '').strip()
+            if response.status_code != 200 or not qr_id or not qr_url:
+                message = str(payload.get('toast') or payload.get('message') or response.text or response.status_code)
+                raise ValueError(message[:300])
+            qr_host = (urlparse(qr_url).hostname or '').lower()
+            if not (
+                qr_url.startswith('https://')
+                and (qr_host == 'xiaoyuzhoufm.com' or qr_host.endswith('.xiaoyuzhoufm.com')
+                     or qr_host == 'xiaoyuzhou.fm' or qr_host.endswith('.xiaoyuzhou.fm'))
+            ):
+                raise ValueError('小宇宙返回了无效的二维码地址')
+            login_id = secrets.token_urlsafe(32)
+            _xiaoyuzhou_qr_sessions[login_id] = {
+                'qr_id': qr_id,
+                'cookies': dict(client.cookies),
+                'expires_at': time.time() + 180,
+            }
+        return {
+            'login_id': login_id,
+            'qr_data_url': _xiaoyuzhou_qr_data_url(qr_url),
+            'expires_in': 180,
+        }
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(422, f'生成小宇宙登录二维码失败：{str(exc)[:300]}') from exc
 
 
-@router.post('/xiaoyuzhou/login')
-def login_xiaoyuzhou(body: XiaoyuzhouLoginInput):
-    exe = _executable('xyz', 'XYZ_BIN') or _executable('xiaoyuzhou', 'XYZ_BIN')
-    if not exe:
-        raise HTTPException(503, '小宇宙 transcript 组件未安装，请重新构建后端镜像。')
+@router.post('/xiaoyuzhou/qrcode/status')
+def check_xiaoyuzhou_qrcode(body: XiaoyuzhouQrInput):
+    session = _xiaoyuzhou_qr_sessions.get(body.login_id)
+    if not session:
+        raise HTTPException(404, '登录二维码不存在，请重新生成。')
+    if float(session.get('expires_at') or 0) < time.time():
+        _xiaoyuzhou_qr_sessions.pop(body.login_id, None)
+        raise HTTPException(410, '登录二维码已过期，请重新生成。')
     try:
-        _run([exe, 'login', body.phone, body.code, '--area-code', body.area_code], timeout=60)
-        if not _xyz_credentials_present():
-            raise ValueError('登录完成，但服务器没有保存登录凭证')
-        return {'ok': True}
-    except (ValueError, subprocess.TimeoutExpired) as exc:
-        raise HTTPException(422, f'小宇宙连接失败：{str(exc)[:300]}') from exc
+        with httpx.Client(
+            timeout=15,
+            follow_redirects=True,
+            headers=_xiaoyuzhou_web_headers(),
+            cookies=session.get('cookies') or {},
+        ) as client:
+            response = client.post(
+                _XIAOYUZHOU_WEB_API + '/v1/auth/qrcode/login',
+                json={'id': session['qr_id']},
+            )
+            try:
+                payload = response.json() if response.content else {}
+            except ValueError:
+                payload = {}
+            if response.status_code == 401 and payload.get('code') == 21:
+                _xiaoyuzhou_qr_sessions.pop(body.login_id, None)
+                raise HTTPException(410, '登录二维码已过期，请重新生成。')
+            if response.status_code not in (200, 401):
+                message = str(payload.get('toast') or payload.get('message') or response.text or response.status_code)
+                raise ValueError(message[:300])
+            status = str(payload.get('status') or 'WAITING').upper()
+            if status not in ('CONFIRMED', 'USED'):
+                session['cookies'] = dict(client.cookies)
+                return {'status': 'scanned' if status == 'SCANNED' else 'waiting'}
+            access = response.headers.get('x-jike-access-token') or client.cookies.get('x-jike-access-token') or ''
+            refresh = response.headers.get('x-jike-refresh-token') or client.cookies.get('x-jike-refresh-token') or ''
+            if not access or not refresh:
+                raise ValueError('扫码已确认，但小宇宙没有返回完整登录凭证')
+            _save_xiaoyuzhou_credentials(access, refresh)
+            _xiaoyuzhou_qr_sessions.pop(body.login_id, None)
+            return {'status': 'connected'}
+    except HTTPException:
+        raise
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(422, f'检查小宇宙扫码状态失败：{str(exc)[:300]}') from exc
 
 
 @router.get('/feishu/connect')
@@ -681,10 +863,12 @@ def connect_feishu_user(request: Request):
         'minutes:minutes.basic:read minutes:minutes.transcript:export',
     ).strip()
     query = urlencode({
-        'app_id': app_id,
+        'client_id': app_id,
+        'response_type': 'code',
         'redirect_uri': redirect_uri,
         'state': _feishu_oauth_state(),
         'scope': scopes,
+        'prompt': 'consent',
     })
     return {
         'authorize_url': 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + query,
@@ -706,7 +890,7 @@ async def feishu_oauth_callback(request: Request, code: str = '', state: str = '
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/') + '/authen/v2/oauth/token',
+                _feishu_oauth_token_url(),
                 json={
                     'grant_type': 'authorization_code',
                     'client_id': app_id,

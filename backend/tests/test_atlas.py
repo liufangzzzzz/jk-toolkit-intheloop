@@ -90,7 +90,7 @@ def test_podcast_english_requires_summary(client):
     identifier=create(client,'contents',record)
     saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
     assert saved['chinese_only'] is True
-    assert 'editorial:podcast' in saved['tag_ids']
+    assert {'editorial:content','editorial:podcast'}.issubset(saved['tag_ids'])
     response=client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'en','revision':1})
     assert response.status_code==409
     assert '仅发布到中文官网' in response.text
@@ -98,13 +98,20 @@ def test_podcast_english_requires_summary(client):
 
 def test_editorial_filters_are_hidden_primary_tags(client):
     tags={tag['id']:tag for tag in client.get('/api/v1/atlas').json()['tags']}
-    for identifier in ('editorial:article','editorial:podcast','editorial:overseas'):
-        assert tags[identifier]['map_level']=='primary'
+    assert 'editorial:article' not in tags
+    assert tags['editorial:content']['map_visible'] is False
+    assert tags['editorial:content']['visible_locales']==['zh','en']
+    for identifier in ('editorial:podcast','editorial:overseas','editorial:conversations'):
         assert tags[identifier]['map_visible'] is False
-        assert tags[identifier]['visible_locales']==['zh']
-    assert tags['editorial:conversations']['map_visible'] is False
+        assert tags[identifier]['parent_ids']==['editorial:content']
     assert 'editorial:worldview' not in tags
     assert 'editorial:thinking' not in tags
+
+def test_regular_story_belongs_to_content_without_forced_subtype(client):
+    identifier=create(client,'contents',article())
+    saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
+    assert 'editorial:content' in saved['tag_ids']
+    assert not {'editorial:podcast','editorial:overseas','editorial:conversations'}.intersection(saved['tag_ids'])
 
 def test_publication_relationship_is_snapshot(client):
     cid=create(client,'companies',{'slug':'company','name_zh':'公司','visible_locales':['zh']})
@@ -464,9 +471,10 @@ def test_audio_studio_refreshes_user_identity_for_export(client, monkeypatch):
     monkeypatch.setenv('FEISHU_USER_REFRESH_TOKEN', 'refresh-one')
     monkeypatch.setenv('FEISHU_EXPORT_FOLDER_TOKEN', 'folder456')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    monkeypatch.setenv('FEISHU_OAUTH_TOKEN_URL', 'https://accounts.feishu.example/oauth/v3/token')
     original = httpx.AsyncClient
     def handler(request):
-        if request.url.path.endswith('/authen/v2/oauth/token'):
+        if request.url.path.endswith('/oauth/v3/token'):
             return httpx.Response(200, json={'code': 0, 'access_token': 'fresh-user-token', 'refresh_token': 'refresh-two'})
         assert request.headers['Authorization'] == 'Bearer fresh-user-token'
         if request.url.path.endswith('/docx/v1/documents'):
@@ -486,6 +494,7 @@ def test_audio_studio_feishu_export_surfaces_permission_error(client, monkeypatc
     monkeypatch.setenv('FEISHU_USER_ACCESS_TOKEN', 'user-token')
     monkeypatch.setenv('FEISHU_EXPORT_FOLDER_TOKEN', 'folder123')
     monkeypatch.setenv('FEISHU_API_BASE', 'https://feishu.example/open-apis')
+    monkeypatch.setenv('FEISHU_OAUTH_TOKEN_URL', 'https://accounts.feishu.example/oauth/v3/token')
     original = httpx.AsyncClient
     def handler(request):
         return httpx.Response(403, json={'code': 1770032, 'msg': 'forbidden: missing docx permission'})
@@ -531,7 +540,9 @@ def test_audio_studio_connects_feishu_user_with_oauth(client, monkeypatch):
     connect = client.get('/api/v1/audio-studio/feishu/connect')
     assert connect.status_code == 200
     query = parse_qs(urlparse(connect.json()['authorize_url']).query)
-    assert query['app_id'] == ['app-id']
+    assert query['client_id'] == ['app-id']
+    assert query['response_type'] == ['code']
+    assert query['prompt'] == ['consent']
     assert query['redirect_uri'] == ['https://toolkit.example/api/v1/audio-studio/feishu/callback']
     assert 'offline_access' in query['scope'][0].split()
     state = query['state'][0]
@@ -550,6 +561,77 @@ def test_audio_studio_connects_feishu_user_with_oauth(client, monkeypatch):
     assert callback.status_code == 307
     assert callback.headers['location'] == 'https://toolkit.example/ops/audio?feishu=connected'
     assert audio_store.get_setting('feishu-user-refresh-token') == 'refresh-token'
+
+
+def test_audio_studio_connects_xiaoyuzhou_with_qrcode(client, monkeypatch, tmp_path):
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('XIAOYUZHOU_STATE_DIR', str(tmp_path))
+    monkeypatch.setattr(audio_studio, '_executable', lambda *_args: '/usr/local/bin/xyz')
+    monkeypatch.setattr(audio_studio, '_xiaoyuzhou_qr_data_url', lambda value: 'data:image/png;base64,test')
+    audio_studio._xiaoyuzhou_qr_sessions.clear()
+
+    class Response:
+        content = b'{}'
+        text = ''
+        def __init__(self, payload, headers=None):
+            self.status_code = 200
+            self._payload = payload
+            self.headers = headers or {}
+        def json(self): return self._payload
+
+    class Client:
+        def __init__(self, **kwargs): self.cookies = dict(kwargs.get('cookies') or {})
+        def __enter__(self): return self
+        def __exit__(self, *_args): return None
+        def post(self, url, json):
+            if url.endswith('/qrcode/create'):
+                assert json == {'clientId': 'xyz-web'}
+                return Response({'id': 'qr-id', 'url': 'https://accounts.xiaoyuzhoufm.com/login?qr=one'})
+            assert url.endswith('/qrcode/login')
+            assert json == {'id': 'qr-id'}
+            return Response({'status': 'CONFIRMED'}, {
+                'x-jike-access-token': 'access-token',
+                'x-jike-refresh-token': 'refresh-token',
+            })
+
+    monkeypatch.setattr(audio_studio.httpx, 'Client', Client)
+    created = client.post('/api/v1/audio-studio/xiaoyuzhou/qrcode/create')
+    assert created.status_code == 200, created.text
+    assert created.json()['qr_data_url'].startswith('data:image/png')
+    checked = client.post('/api/v1/audio-studio/xiaoyuzhou/qrcode/status', json={
+        'login_id': created.json()['login_id'],
+    })
+    assert checked.status_code == 200, checked.text
+    assert checked.json()['status'] == 'connected'
+    token = __import__('json').loads((tmp_path/'xiaoyuzhou'/'token.json').read_text())
+    assert token['access_token'] == 'access-token'
+    assert token['refresh_token'] == 'refresh-token'
+    assert token['device_id']
+
+
+def test_audio_studio_caches_xiaoyuzhou_transcript_after_first_read(monkeypatch, tmp_path):
+    from app.modules.audio_studio import routes as audio_studio
+    monkeypatch.setenv('XIAOYUZHOU_STATE_DIR', str(tmp_path))
+    monkeypatch.setenv('XIAOYUZHOU_MIN_FETCH_INTERVAL_SECONDS', '0')
+    monkeypatch.setattr(audio_studio, '_executable', lambda *_args: '/usr/local/bin/xyz')
+    monkeypatch.setattr(audio_studio, '_ensure_xyz_credentials', lambda: None)
+    audio_studio._xiaoyuzhou_recent_fetches.clear()
+    calls = []
+
+    def run(command, timeout=120):
+        calls.append(command)
+        if command[1] == 'episode':
+            return '{"title":"测试节目","transcript_media_id":"media-one"}'
+        return '[00:01] 第一句\n[00:08] 第二句'
+
+    monkeypatch.setattr(audio_studio, '_run', run)
+    url = 'https://www.xiaoyuzhoufm.com/episode/1234567890abcdef12345678'
+    first = audio_studio._xyz_transcript(url)
+    second = audio_studio._xyz_transcript(url)
+    assert first['transcript'] == second['transcript']
+    assert second['cached'] is True
+    assert len(calls) == 2
+    assert (tmp_path/'xiaoyuzhou'/'transcripts'/'1234567890abcdef12345678.json').is_file()
 
 
 def test_audio_studio_reads_public_feishu_minutes_before_any_identity(client, monkeypatch):

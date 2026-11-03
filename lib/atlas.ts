@@ -68,6 +68,7 @@ export type Version = {
   links?: { label: string; url: string }[];
 };
 export type Content = {
+  source_locale?: Locale;
   visibility?: "public" | "internal";
   chinese_only?: boolean;
   source_account?: string;

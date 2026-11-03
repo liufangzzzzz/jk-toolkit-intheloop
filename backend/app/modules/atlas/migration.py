@@ -123,6 +123,33 @@ def seed_initial_taxonomy(db, stamp):
     db.execute("DELETE FROM atlas_tags WHERE id IN ('editorial:worldview','editorial:thinking')")
     db.execute("INSERT INTO atlas_migrations VALUES ('initial-taxonomy-v4')")
 
+def structure_content_types(db, stamp):
+    """Make Content the parent set; keep only meaningful editorial subsets below it."""
+    db.execute('CREATE TABLE IF NOT EXISTS atlas_migrations (name TEXT PRIMARY KEY)')
+    if db.execute("SELECT 1 FROM atlas_migrations WHERE name='content-types-v5'").fetchone(): return
+    identifier = 'editorial:content'
+    data = dict(slug='content', name_zh='内容', name_en='Content', dimension='application',
+                tag_type='content_type', entity_kind=None, map_visible=False, map_level='primary',
+                visible_locales=['zh','en'], aliases=[], website='', description_zh='', description_en='',
+                parent_ids=[], related_tag_ids=[], featured_content_ids=[])
+    db.execute('INSERT OR IGNORE INTO atlas_tags VALUES (?,?,?,?,?,?)',
+               (identifier, data['slug'], data['dimension'], json.dumps(data, ensure_ascii=False), 1, stamp))
+    for child in ('editorial:conversations','editorial:podcast','editorial:overseas'):
+        if db.execute('SELECT 1 FROM atlas_tags WHERE id=?',(child,)).fetchone():
+            db.execute("INSERT OR IGNORE INTO atlas_tag_relations VALUES (?,?,'parent')",(child,identifier))
+    for table,column in [('atlas_contents','data'),('atlas_publications','snapshot')]:
+        for row in db.execute(f'SELECT rowid,{column} FROM {table}').fetchall():
+            content=json.loads(row[column])
+            content['tag_ids']=list(dict.fromkeys([identifier]+[x for x in content.get('tag_ids',[]) if x!='editorial:article']))
+            db.execute(f'UPDATE {table} SET {column}=? WHERE rowid=?',(json.dumps(content,ensure_ascii=False),row['rowid']))
+            if table=='atlas_contents':
+                content_id=db.execute('SELECT id FROM atlas_contents WHERE rowid=?',(row['rowid'],)).fetchone()[0]
+                db.execute('INSERT OR IGNORE INTO atlas_content_tags VALUES (?,?)',(content_id,identifier))
+    db.execute("DELETE FROM atlas_content_tags WHERE tag_id='editorial:article'")
+    db.execute("DELETE FROM atlas_tag_relations WHERE source_id='editorial:article' OR target_id='editorial:article'")
+    db.execute("DELETE FROM atlas_tags WHERE id='editorial:article'")
+    db.execute("INSERT INTO atlas_migrations VALUES ('content-types-v5')")
+
 def unify_tags(db, stamp):
     db.execute('CREATE TABLE IF NOT EXISTS atlas_migrations (name TEXT PRIMARY KEY)')
     if db.execute("SELECT 1 FROM atlas_migrations WHERE name='unified-tags-v1'").fetchone(): return
