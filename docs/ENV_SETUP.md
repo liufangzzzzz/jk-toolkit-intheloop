@@ -49,7 +49,7 @@ docker compose up -d --force-recreate
 
 当前 `compose.yaml` 已显式传入 `.env.example` 中的全部工作台变量，包括 Modelink、飞书应用、飞书用户授权、微信与极客公园官网凭据。自动测试会检查两份文件，后续若新增变量却漏改 Compose，测试会直接失败。
 
-音频整理会先按「互联网用户可阅读」读取妙记公开字幕接口；公开读取失败后，才使用同一个机器人应用取得的 `user_access_token`。导出飞书文档也使用这个用户身份，因此创建出的文档属于授权用户并可直接进入其云盘。代码不会使用机器人的 `tenant_access_token` 读取妙记或导出文档，也不会读取浏览器登录状态。首次连接前，需要在飞书开放平台把 `https://toolkit-intheloop.geekpark.net/api/v1/audio-studio/feishu/callback` 加入应用的重定向 URL，然后在音频整理页点击“连接机器人用户身份”。默认查找个人云盘根目录下名为“沟通记录”的文件夹；不在根目录时，将链接中的 folder token 填入 `FEISHU_EXPORT_FOLDER_TOKEN`。
+音频整理会先按「互联网用户可阅读」读取妙记公开字幕接口；公开读取失败后，才使用同一个飞书应用取得的 `user_access_token`。导出飞书文档也使用这个用户身份，因此创建出的文档属于授权用户并可直接进入其云盘。代码不会使用机器人的 `tenant_access_token` 读取妙记或导出文档，也不会读取浏览器登录状态。首次连接前，需要在飞书开放平台把 `https://toolkit-intheloop.geekpark.net/api/v1/audio-studio/feishu/callback` 加入应用的重定向 URL，然后在音频整理页点击“连接我的飞书”。默认查找个人云盘根目录下名为“沟通记录”的文件夹；不在根目录时，将链接中的 folder token 填入 `FEISHU_EXPORT_FOLDER_TOKEN`。
 
 用户授权默认申请 `offline_access docx:document drive:drive minutes:minutes.basic:read minutes:minutes.transcript:export`。这些权限必须在飞书开放平台的“用户身份”权限中开通，并在修改后发布新的应用版本；否则飞书可能不会返回长期 refresh token，或在创建文档时返回 403。可通过 `FEISHU_OAUTH_SCOPES` 覆盖申请范围。
 

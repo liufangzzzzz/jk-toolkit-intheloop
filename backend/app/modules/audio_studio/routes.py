@@ -116,6 +116,13 @@ def _feishu_oauth_redirect_uri(request: Request) -> str:
     return str(request.url_for('feishu_oauth_callback'))
 
 
+def _feishu_oauth_token_url() -> str:
+    return os.environ.get(
+        'FEISHU_OAUTH_TOKEN_URL',
+        'https://accounts.feishu.cn/oauth/v3/token',
+    ).strip()
+
+
 def _feishu_oauth_state() -> str:
     state = secrets.token_urlsafe(32)
     store.set_setting('feishu-oauth-state', json.dumps({'value': state, 'expires_at': int(time.time()) + 600}))
@@ -185,9 +192,8 @@ async def _feishu_user_token(client: httpx.AsyncClient) -> str:
         if direct:
             return direct
         raise HTTPException(503, '飞书用户 refresh token 已配置，但还缺少 App ID 或 App Secret。')
-    api_base = os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/')
     try:
-        response = await client.post(api_base + '/authen/v2/oauth/token', json={
+        response = await client.post(_feishu_oauth_token_url(), json={
             'grant_type': 'refresh_token',
             'client_id': app_id,
             'client_secret': app_secret,
@@ -453,7 +459,7 @@ def _ensure_xyz_credentials() -> None:
     refresh = os.environ.get('XIAOYUZHOU_REFRESH_TOKEN', '').strip()
     device = os.environ.get('XIAOYUZHOU_DEVICE_ID', '').strip()
     if not (access and refresh and device):
-        raise ValueError('小宇宙 transcript 尚未配置。请在服务器环境变量填写 access token、refresh token 和 device id。')
+        raise ValueError('小宇宙尚未连接。请先到“音频整理”顶部点击“连接小宇宙”，用手机号和短信验证码完成一次连接。')
     state.mkdir(parents=True, exist_ok=True, mode=0o700)
     payload = {'access_token': access, 'refresh_token': refresh, 'device_id': device}
     temporary = token_file.with_suffix('.tmp')
@@ -681,10 +687,12 @@ def connect_feishu_user(request: Request):
         'minutes:minutes.basic:read minutes:minutes.transcript:export',
     ).strip()
     query = urlencode({
-        'app_id': app_id,
+        'client_id': app_id,
+        'response_type': 'code',
         'redirect_uri': redirect_uri,
         'state': _feishu_oauth_state(),
         'scope': scopes,
+        'prompt': 'consent',
     })
     return {
         'authorize_url': 'https://accounts.feishu.cn/open-apis/authen/v1/authorize?' + query,
@@ -706,7 +714,7 @@ async def feishu_oauth_callback(request: Request, code: str = '', state: str = '
     try:
         async with httpx.AsyncClient(timeout=30) as client:
             response = await client.post(
-                os.environ.get('FEISHU_API_BASE', 'https://open.feishu.cn/open-apis').rstrip('/') + '/authen/v2/oauth/token',
+                _feishu_oauth_token_url(),
                 json={
                     'grant_type': 'authorization_code',
                     'client_id': app_id,
