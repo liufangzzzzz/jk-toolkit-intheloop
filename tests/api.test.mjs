@@ -28,6 +28,12 @@ test('backend validation message and disconnected requests remain actionable', a
   fetchMock.mock.mockImplementation(async () => { throw new TypeError('network error'); });
   await assert.rejects(api('/website-import/parse-file'), /连接中断/);
 });
+test('FastAPI 422 validation arrays expose the failing field', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => Response.json({
+    detail: [{ type: 'string_too_short', loc: ['body', 'resources', 0, 'label'], msg: 'String should have at least 1 character' }],
+  }, { status: 422 }));
+  await assert.rejects(api('/atlas/contents'), /配套内容第1条名称：不能为空/);
+});
 test('proxy removes obsolete framing/encoding but preserves auth and response type', async () => {
   const incoming = new Headers({ connection: 'keep-alive, x-hop', 'x-hop': 'remove', 'content-length': '3', cookie: 'session=test' });
   const outgoing = proxyHeaders(incoming);

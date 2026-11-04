@@ -20,11 +20,45 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     const detail = isRecord(payload) ? payload.detail : undefined;
-    const message = typeof detail === 'string' ? detail : isRecord(detail) ? detail.message : undefined;
+    const message = formatErrorDetail(detail);
     throw new Error(typeof message === 'string' ? message : `请求失败（HTTP ${response.status}）`);
   }
   if (!isRecord(payload)) throw new Error('服务返回的数据格式异常，请重试。');
   return payload as T;
+}
+
+function formatErrorDetail(detail: unknown): string | undefined {
+  if (typeof detail === 'string') return detail;
+  if (isRecord(detail) && typeof detail.message === 'string') return detail.message;
+  if (!Array.isArray(detail)) return undefined;
+  const messages = detail.flatMap((item) => {
+    if (!isRecord(item) || typeof item.msg !== 'string') return [];
+    const loc = Array.isArray(item.loc) ? item.loc.filter((part) => typeof part === 'string' || typeof part === 'number') : [];
+    const path = readableFieldPath(loc);
+    return [`${path ? `${path}：` : ''}${translateValidationMessage(item.msg)}`];
+  });
+  return messages.length ? `提交内容未通过校验：${messages.join('；')}` : undefined;
+}
+
+function readableFieldPath(parts: (string | number)[]): string {
+  const names: Record<string, string> = {
+    body: '正文', title: '标题', abstract: '摘要', date: '日期', source_url: '原文链接',
+    source_account: '来源', resources: '配套内容', label: '名称', label_en: '英文名称', url: '链接',
+    article: '文章', request_id: '发布请求', account_id: '官网账号', content_html: '正文',
+  };
+  return parts.filter((part) => part !== 'body').map((part, index, all) => {
+    if (typeof part === 'number') return `${part + 1}`;
+    const name = names[part] || part;
+    return typeof all[index + 1] === 'number' ? name : name;
+  }).join('第').replace(/第(\d+)(?:第|$)/g, '第$1条');
+}
+
+function translateValidationMessage(message: string): string {
+  if (/at least 1 character/i.test(message)) return '不能为空';
+  if (/valid URL|URL scheme/i.test(message)) return '格式不正确，请填写完整的 http:// 或 https:// 链接';
+  if (/at most (\d+) characters/i.test(message)) return message.replace(/String should have at most (\d+) characters/i, '不能超过 $1 个字符');
+  if (/does not match pattern/i.test(message)) return '格式不正确';
+  return message;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
