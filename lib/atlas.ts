@@ -67,6 +67,12 @@ export type Version = {
   platform?: string;
   links?: { label: string; url: string }[];
 };
+export type Terminology = {
+  zh: string;
+  en: string;
+  kind: "company" | "person" | "product" | "technical" | "other";
+  confirmed: boolean;
+};
 export type Content = {
   source_locale?: Locale;
   visibility?: "public" | "internal";
@@ -87,6 +93,7 @@ export type Content = {
   tag_ids: string[];
   ai_recommended_tag_ids?: string[];
   ai_suggested_tags?: string[];
+  terminology?: Terminology[];
   versions: Partial<Record<Locale, Version>>;
   publications?: {
     locale: Locale;
@@ -114,3 +121,11 @@ export const enDimensions: Record<string, string> = {
   application: "Applications",
 };
 export const blankVersion: Version = { title: "", summary: "", reading_hint: "", body: "" };
+
+/** Accept the date forms editors naturally paste, while preserving year/month precision. */
+export function normalizePartialDate(input: string): string {
+  const normalized = input.trim().replace(/[年/.]/g, '-').replace(/月/g, '-').replace(/日/g, '').replace(/-+$/g, '');
+  const match = normalized.match(/^(\d{4})(?:-(\d{1,2}))?(?:-(\d{1,2}))?$/);
+  if (!match) return normalized;
+  return [match[1], match[2]?.padStart(2, '0'), match[3]?.padStart(2, '0')].filter(Boolean).join('-');
+}

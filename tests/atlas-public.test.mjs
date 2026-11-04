@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {timeline,contentTarget,editorialView} from '../lib/atlas-public.ts';
+import {normalizePartialDate} from '../lib/atlas.ts';
 test('article topics are explicit; company tags do not silently widen a timeline',()=>{
  const data={tags:[{id:'a',slug:'wheel',dimension:'form'},{id:'b',slug:'humanoid',dimension:'form'}],companies:[{id:'co',tag_ids:['a']}],contents:[{id:'1',date:'2026-01-01',tag_ids:['a'],company_ids:['co']},{id:'2',date:'2026-02-01',tag_ids:['b'],company_ids:[]},{id:'3',date:'2026-03-01',tag_ids:[],company_ids:['co']}]};
  assert.deepEqual(timeline(data,{group:'form'}).map(x=>x.id),['2','1']);
@@ -13,6 +14,12 @@ test('Latest accepts year, month, or day precision and keeps reverse chronologic
   {id:'day',date:'2025-06-18',tag_ids:[],company_ids:[]},
  ]};
  assert.deepEqual(timeline(data,{}).map(c=>c.id),['day','month','year']);
+});
+test('editor dates accept common separators and Chinese date notation',()=>{
+ assert.equal(normalizePartialDate('2026'),'2026');
+ assert.equal(normalizePartialDate('2026/1'),'2026-01');
+ assert.equal(normalizePartialDate('2026.1.9'),'2026-01-09');
+ assert.equal(normalizePartialDate('2026年10月29日'),'2026-10-29');
 });
 test('Chinese original links and English hosted text have separate destinations',()=>{
  const c={id:'a',source_url:'https://mp.weixin.qq.com/s/test',versions:{zh:{destination:'external'},en:{destination:'hosted'}}};
