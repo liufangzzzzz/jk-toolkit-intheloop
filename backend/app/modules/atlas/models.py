@@ -135,6 +135,15 @@ class Content(Base):
             value = dict(value)
             if not value.get('brand'):
                 value['brand'] = 'intheloop'
+            # The companion-link editor may contain a newly-added, untouched row.
+            # The whole section is optional, so do not turn that UI state into a 422.
+            resources = value.get('resources')
+            if isinstance(resources, list):
+                value['resources'] = [
+                    resource for resource in resources
+                    if not isinstance(resource, dict)
+                    or any(str(resource.get(field) or '').strip() for field in ('label', 'label_en', 'url'))
+                ]
         return value
 
     chinese_only: bool = False
