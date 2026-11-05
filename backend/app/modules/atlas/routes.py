@@ -4,7 +4,8 @@ import sqlite3
 import uuid
 from pathlib import Path
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Request
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 from ...auth import require_auth
 from ...database import database
@@ -12,6 +13,7 @@ from ...document_text import parse_word_text
 from . import store
 from app.ai_gateway import connection, model_options
 from .models import Company, Tag, Content, Product, Publication, Generate, Locale, ImportURL
+from ..website_ingest.assets import read_asset, save_asset
 
 router = APIRouter(prefix='/api/v1/atlas', dependencies=[Depends(require_auth)])
 public_router = APIRouter(prefix='/api/v1/public/atlas')
@@ -27,6 +29,25 @@ def catalogue(): return store.catalogue()
 
 @public_router.get('/{locale}')
 def public_catalogue(locale: Locale): return store.public_catalogue(locale)
+
+@public_router.get('/media/{token}')
+def public_media(token: str, request: Request):
+    result = read_asset('ingest-asset://' + token)
+    if not result: raise HTTPException(404, '媒体文件不存在')
+    raw, _filename, content_type = result
+    headers = {'Cache-Control':'public, max-age=31536000, immutable','Accept-Ranges':'bytes'}
+    requested = request.headers.get('range','')
+    if requested.startswith('bytes='):
+        try:
+            start_text,end_text=requested[6:].split('-',1)
+            start=int(start_text) if start_text else max(0,len(raw)-int(end_text))
+            end=min(len(raw)-1,int(end_text)) if end_text else len(raw)-1
+            if start<0 or start>end: raise ValueError()
+        except (ValueError,TypeError):
+            return Response(status_code=416,headers={**headers,'Content-Range':f'bytes */{len(raw)}'})
+        chunk=raw[start:end+1]
+        return Response(content=chunk,status_code=206,media_type=content_type,headers={**headers,'Content-Range':f'bytes {start}-{end}/{len(raw)}','Content-Length':str(len(chunk))})
+    return Response(content=raw, media_type=content_type, headers=headers)
 
 
 def persist(kind, body, record_id=None):
@@ -79,6 +100,24 @@ async def import_file(file: UploadFile = File(...)):
                 'notice': '已导入文字。图片暂不进入新站，请在发布前核对正文。'}
     except Exception:
         raise HTTPException(422, '文档解析失败，请改用 DOCX 或直接粘贴正文；原稿不会被覆盖')
+
+@router.post('/media')
+async def upload_media(file: UploadFile = File(...)):
+    raw = await file.read(50 * 1024 * 1024 + 1)
+    if not raw: raise HTTPException(422, '媒体文件为空')
+    if len(raw) > 50 * 1024 * 1024: raise HTTPException(413, '单个媒体文件请小于 50 MB')
+    declared = (file.content_type or '').split(';',1)[0].lower()
+    suffix = Path(file.filename or '').suffix.lower()
+    allowed = {
+        'image/jpeg':'image','image/png':'image','image/webp':'image','image/gif':'gif',
+        'video/mp4':'video','video/webm':'video','video/quicktime':'video',
+    }
+    content_type = declared
+    if content_type not in allowed:
+        content_type = {'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.gif':'image/gif','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime'}.get(suffix,'')
+    if content_type not in allowed: raise HTTPException(422, '支持 JPG、PNG、WebP、GIF、MP4、WebM 和 MOV')
+    reference = save_asset(raw, content_type, suffix=suffix)
+    return {'type':allowed[content_type],'url':reference,'alt':Path(file.filename or '').stem[:300],'caption':''}
 
 
 @router.get('/models')
@@ -235,5 +274,5 @@ async def import_url(body: ImportURL):
     from .extract import extract_url
     try:
         return await extract_url(body.url)
-    except (ValueError, httpx.HTTPError) as exc:
-        raise HTTPException(422, str(exc) if isinstance(exc, ValueError) else '原站暂时无法读取，请粘贴正文；现有草稿未改变')
+    except (ValueError, RuntimeError, httpx.HTTPError) as exc:
+        raise HTTPException(422, str(exc) if isinstance(exc, (ValueError,RuntimeError)) else '原站暂时无法读取，请粘贴正文；现有草稿未改变')

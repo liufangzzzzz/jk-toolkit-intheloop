@@ -80,6 +80,25 @@ def test_content_terminology_is_saved_for_editorial_calibration(client):
     assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
     assert 'terminology' not in client.get('/api/v1/public/atlas/zh').json()['contents'][0]
 
+def test_article_media_upload_is_published_through_public_asset_route(client, tmp_path, monkeypatch):
+    monkeypatch.setenv('ITL_IMPORT_ASSET_PATH', str(tmp_path / 'assets'))
+    png = b'\x89PNG\r\n\x1a\n' + b'test-image'
+    uploaded = client.post('/api/v1/atlas/media', files={'file':('robot.png', png, 'image/png')})
+    assert uploaded.status_code == 200, uploaded.text
+    media = uploaded.json()
+    assert media['type'] == 'image' and media['url'].startswith('ingest-asset://')
+    identifier=create(client,'contents',article(media=[media]))
+    assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
+    public = client.get('/api/v1/public/atlas/zh').json()['contents'][0]
+    assert public['media'][0]['url'].startswith('/api/v1/public/atlas/media/')
+    anonymous=TestClient(app)
+    asset=anonymous.get(public['media'][0]['url'])
+    assert asset.status_code==200 and asset.content==png
+    assert asset.headers['cache-control']=='public, max-age=31536000, immutable'
+    partial=anonymous.get(public['media'][0]['url'],headers={'Range':'bytes=0-7'})
+    assert partial.status_code==206 and partial.content==png[:8]
+    assert partial.headers['content-range']==f'bytes 0-7/{len(png)}'
+
 def test_models_explicit_and_no_key_exposure(client,monkeypatch):
     monkeypatch.setenv('MODELINK_API_KEY','secret-never-show')
     monkeypatch.setenv('MODELINK_BASE_URL','https://example.com/v1')

@@ -73,6 +73,12 @@ export type Terminology = {
   kind: "company" | "person" | "product" | "technical" | "other";
   confirmed: boolean;
 };
+export type MediaAsset = {
+  type: "image" | "gif" | "video";
+  url: string;
+  alt?: string;
+  caption?: string;
+};
 export type Content = {
   source_locale?: Locale;
   visibility?: "public" | "internal";
@@ -94,6 +100,7 @@ export type Content = {
   ai_recommended_tag_ids?: string[];
   ai_suggested_tags?: string[];
   terminology?: Terminology[];
+  media?: MediaAsset[];
   versions: Partial<Record<Locale, Version>>;
   publications?: {
     locale: Locale;

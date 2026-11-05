@@ -14,6 +14,9 @@ _EXTENSIONS = {
     "image/webp": ".webp",
     "image/bmp": ".bmp",
     "image/tiff": ".tif",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
 }
 
 

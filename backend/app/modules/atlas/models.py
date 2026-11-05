@@ -114,6 +114,19 @@ class Terminology(BaseModel):
     kind: Literal['company','person','product','technical','other'] = 'other'
     confirmed: bool = False
 
+class MediaAsset(BaseModel):
+    type: Literal['image','gif','video'] = 'image'
+    url: str = Field(min_length=1, max_length=500)
+    alt: str = Field(default='', max_length=300)
+    caption: str = Field(default='', max_length=500)
+
+    @field_validator('url')
+    @classmethod
+    def media_url(cls, value):
+        if value.startswith('ingest-asset://'):
+            return value
+        return valid_url(value)
+
 class ImportURL(BaseModel):
     url: str = Field(min_length=1, max_length=4000)
 
@@ -175,6 +188,7 @@ class Content(Base):
     ai_recommended_tag_ids: list[str] = Field(default_factory=list)
     ai_suggested_tags: list[str] = Field(default_factory=list)
     terminology: list[Terminology] = Field(default_factory=list)
+    media: list[MediaAsset] = Field(default_factory=list, max_length=100)
     versions: dict[Locale, Version]
 
     @field_validator('source_url')
