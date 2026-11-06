@@ -134,10 +134,51 @@ def catalogue():
     initialize()
     with database() as db:
         result = {kind: records(db, kind) for kind in ('companies', 'tags', 'products', 'contents')}
-        row = db.execute("SELECT value FROM atlas_settings WHERE key='homepage-featured'").fetchone()
-        try: result['homepage_featured_ids'] = json.loads(row['value']) if row else []
-        except (TypeError, json.JSONDecodeError): result['homepage_featured_ids'] = []
+        featured = featured_lists(db)
+        result['homepage_featured_zh_ids'] = featured['zh']
+        result['homepage_featured_en_ids'] = featured['en']
+        # Retain the legacy key for older deployed frontends during a rolling update.
+        result['homepage_featured_ids'] = featured['zh']
+        membership = {locale: set(ids) for locale, ids in featured.items()}
+        for item in result['contents']:
+            item['featured_locales'] = [locale for locale in ('zh','en') if item['id'] in membership[locale]]
         return result
+
+
+def _json_list_setting(db, key):
+    row = db.execute('SELECT value FROM atlas_settings WHERE key=?', (key,)).fetchone()
+    if not row: return None
+    try:
+        value = json.loads(row['value'])
+        return list(dict.fromkeys(str(item) for item in value)) if isinstance(value, list) else []
+    except (TypeError, json.JSONDecodeError):
+        return []
+
+
+def featured_lists(db):
+    legacy = _json_list_setting(db, 'homepage-featured') or []
+    zh = _json_list_setting(db, 'homepage-featured-zh')
+    en = _json_list_setting(db, 'homepage-featured-en')
+    return {
+        'zh': zh if zh is not None else legacy,
+        'en': en if en is not None else legacy,
+    }
+
+
+def set_featured(locale, content_ids):
+    initialize()
+    with database() as db:
+        ids = list(dict.fromkeys(content_ids))
+        db.execute('INSERT INTO atlas_settings VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                   (f'homepage-featured-{locale}', json.dumps(ids, ensure_ascii=False), now()))
+        selected = set(ids)
+        for row in list(db.execute('SELECT id,data FROM atlas_contents')):
+            item = json.loads(row['data'])
+            locales = set(item.get('featured_locales', []))
+            if row['id'] in selected: locales.add(locale)
+            else: locales.discard(locale)
+            item['featured_locales'] = [value for value in ('zh','en') if value in locales]
+            db.execute('UPDATE atlas_contents SET data=? WHERE id=?', (json.dumps(item, ensure_ascii=False), row['id']))
 
 
 def get_setting(key, fallback=''):
@@ -254,6 +295,13 @@ def save(kind, data, record_id=None):
                 db.execute(f'DELETE FROM atlas_content_{entity} WHERE content_id=?', (record_id,))
                 for related in data[f'{singular}_ids']:
                     db.execute(f'INSERT INTO atlas_content_{entity} VALUES (?,?)', (record_id, related))
+            featured = featured_lists(db)
+            chosen = set(data.get('featured_locales', []))
+            for locale in ('zh','en'):
+                ids = [item for item in featured[locale] if item != record_id]
+                if locale in chosen: ids.append(record_id)
+                db.execute('INSERT INTO atlas_settings VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at',
+                           (f'homepage-featured-{locale}', json.dumps(ids, ensure_ascii=False), stamp))
         if kind == 'products':
             valid = {r[0] for r in db.execute('SELECT id FROM atlas_tags')}
             if not set(data['tag_ids']).issubset(valid): raise ValueError('产品引用了不存在的标签')
@@ -298,6 +346,7 @@ def public_catalogue(locale):
             if c.get('visibility','public') == 'internal': continue
             if locale == 'en' and (c.get('section') == 'overseas' or c.get('chinese_only')): continue
             c.pop('terminology', None)  # Editorial calibration notes stay in the workbench.
+            c.pop('featured_locales', None)  # Homepage curation stays in its ordered locale list.
             c['media'] = [
                 {**media, 'url': '/api/v1/public/atlas/media/' + media['url'].removeprefix('ingest-asset://')}
                 if str(media.get('url','')).startswith('ingest-asset://') else media
@@ -311,4 +360,4 @@ def public_catalogue(locale):
     published_ids = {c['id'] for c in contents}
     return {'companies': companies, 'tags': tags, 'contents': contents,
             'products': [p for p in data['products'] if p['company_id'] in company_ids and locale in p['visible_locales']],
-            'homepage_featured_ids': [i for i in data.get('homepage_featured_ids', []) if i in published_ids]}
+            'homepage_featured_ids': [i for i in data.get(f'homepage_featured_{locale}_ids', []) if i in published_ids]}

@@ -11,6 +11,7 @@ from ..website_ingest.assets import save_asset
 
 _GEEKPARK_HOSTS = {'geekpark.net', 'www.geekpark.net'}
 _GEEKPARK_ID = re.compile(r'/(?:news|post|posts)/(\d+)(?:[/?#]|$)', re.I)
+_IMAGE_LIMIT = 15 * 1024 * 1024
 
 
 def _html_text(value: str) -> str:
@@ -26,7 +27,69 @@ def _html_media(value: str) -> list[dict]:
         src = str(image.get('src') or '').strip()
         if not src: continue
         kind = 'gif' if src.lower().split('?',1)[0].endswith('.gif') else 'image'
-        media.append({'type':kind,'url':src,'alt':str(image.get('alt') or '')[:300],'caption':''})
+        media.append({'type':kind,'url':src,'alt':str(image.get('alt') or '')[:300],'caption':'','placement':'before_body'})
+    return media
+
+
+def _image_type(raw: bytes, declared: str) -> tuple[str, str] | None:
+    content_type = (declared or '').split(';', 1)[0].lower()
+    if raw.startswith(b'\xff\xd8\xff'): content_type = 'image/jpeg'
+    elif raw.startswith(b'\x89PNG\r\n\x1a\n'): content_type = 'image/png'
+    elif raw.startswith((b'GIF87a', b'GIF89a')): content_type = 'image/gif'
+    elif raw.startswith(b'RIFF') and len(raw) >= 12 and raw[8:12] == b'WEBP': content_type = 'image/webp'
+    if content_type not in {'image/jpeg','image/png','image/gif','image/webp'}: return None
+    return content_type, 'gif' if content_type == 'image/gif' else 'image'
+
+
+async def _download_public_image(client: httpx.AsyncClient, source: str) -> dict | None:
+    url = source
+    try:
+        for _ in range(4):
+            pinned, hostname, host = await public_target(url)
+            async with client.stream('GET', pinned, headers={'Host':host}, extensions={'sni_hostname':hostname}) as response:
+                if response.is_redirect:
+                    url = urljoin(url, response.headers.get('location', ''))
+                    continue
+                response.raise_for_status()
+                raw = bytearray()
+                async for chunk in response.aiter_bytes():
+                    raw.extend(chunk)
+                    if len(raw) > _IMAGE_LIMIT: return None
+                detected = _image_type(bytes(raw), response.headers.get('content-type', ''))
+                if not detected: return None
+                content_type, kind = detected
+                return {'type':kind,'url':save_asset(bytes(raw), content_type),'alt':'','caption':'','placement':'before_body','inline_offsets':{}}
+        return None
+    except (ValueError, OSError, httpx.HTTPError):
+        return None
+
+
+async def _persist_html_media(value: str, base_url: str) -> list[dict]:
+    soup = BeautifulSoup(value or '', 'html.parser')
+    sources = []
+    for image in soup.find_all('img')[:100]:
+        source = str(image.get('data-src') or image.get('src') or '').strip()
+        if source.startswith('ingest-asset://'):
+            sources.append(source)
+        elif source:
+            resolved = urljoin(base_url, source)
+            if resolved.startswith(('http://','https://')): sources.append(resolved)
+    sources = list(dict.fromkeys(sources))
+    durable = [source for source in sources if source.startswith('ingest-asset://')]
+    remote = [source for source in sources if not source.startswith('ingest-asset://')]
+    media = _html_media(''.join(f'<img src="{source}">' for source in durable))
+    if remote:
+        semaphore = asyncio.Semaphore(6)
+        async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False,
+                                     headers={'User-Agent':'Mozilla/5.0','Accept':'image/avif,image/webp,image/png,image/gif,image/jpeg,*/*;q=0.5'}) as client:
+            async def fetch(index, source):
+                async with semaphore: return index, await _download_public_image(client, source)
+            tasks = [asyncio.create_task(fetch(index, source)) for index, source in enumerate(remote)]
+            done, pending = await asyncio.wait(tasks, timeout=35)
+            for task in pending: task.cancel()
+            if pending: await asyncio.gather(*pending, return_exceptions=True)
+            downloaded = sorted((task.result() for task in done if not task.cancelled() and not task.exception()), key=lambda result: result[0])
+        media.extend(item for _index, item in downloaded if item)
     return media
 
 
@@ -60,7 +123,7 @@ async def extract_feishu_url(url: str):
             if fetched:
                 raw, filename, mime = fetched
                 reference = save_asset(raw, mime, suffix=filename)
-                media.append({'type':'gif' if mime == 'image/gif' else 'image','url':reference,'alt':'','caption':''})
+                media.append({'type':'gif' if mime == 'image/gif' else 'image','url':reference,'alt':'','caption':'','placement':'before_body'})
         elif block.type in {'heading','paragraph','question','answer','caption'} and block.content.strip():
             prefix = (block.speaker.strip() + '：') if block.speaker.strip() else ''
             paragraphs.append(prefix + block.content.strip())
@@ -93,16 +156,19 @@ async def extract_geekpark_url(url: str):
             raise ValueError('极客公园官网没有找到这篇内容')
     title = str(payload.get('title') or '').strip()
     summary = str(payload.get('abstract') or payload.get('summary') or '').strip()
-    body = _html_text(str(payload.get('content') or payload.get('content_html') or ''))
+    content_html = str(payload.get('content') or payload.get('content_html') or '')
+    body = _html_text(content_html)
     if not title or len(body) < 40:
         raise ValueError('未提取到完整极客公园文章，请检查链接或直接粘贴正文')
+    media = await _persist_html_media(content_html, url)
     return {
         'source_account': 'In The Loop',
         'brand': 'intheloop',
         'title': title[:250],
         'summary': summary,
         'body': body,
-        'notice': '已读取中文原文。中文站展示原文、AI 阅读提示与原文链接；请选择模型生成英文并审核标签。',
+        'media': media,
+        'notice': f'已读取中文原文并保存 {len(media)} 个图片/GIF。中文站展示原文、AI 阅读提示与原文链接；请选择模型生成英文并审核标签。',
     }
 
 async def public_target(url):
@@ -156,5 +222,6 @@ async def extract_url(url: str, *, specialized: bool = True):
     body = content.get_text('\n', strip=True)
     if not title or len(body) < 40: raise ValueError('未提取到完整文章，请直接粘贴正文')
     description = soup.select_one('meta[name="description"]')
+    media = await _persist_html_media(str(content), url)
     return {'source_account':'In The Loop','brand':'intheloop','title': title[:250], 'summary': description.get('content', '') if description else '',
-            'body': body, 'media': [], 'notice': '已提取原文文字。普通网站的媒体请在下方手动上传。'}
+            'body': body, 'media': media, 'notice': f'已提取原文文字并保存 {len(media)} 个 JPG / PNG / GIF / WebP；请核对媒体与正文。'}
