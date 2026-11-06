@@ -14,6 +14,12 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   try {
     payload = await response.json();
   } catch {
+    if (response.status === 413) {
+      throw new Error('上传失败：文件或请求超过服务器大小限制（HTTP 413）。请压缩文件后重试。');
+    }
+    if (response.status === 415) {
+      throw new Error('上传失败：服务器不支持这种文件格式（HTTP 415）。');
+    }
     throw new Error(response.ok
       ? '结果传输不完整或格式异常，请重试；若持续出现，请联系部署人员检查代理服务。'
       : `请求失败（HTTP ${response.status}），请稍后重试。`);
