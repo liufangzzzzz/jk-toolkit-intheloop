@@ -1,4 +1,4 @@
-"""Text-only imports; never downloads audio, images, or executes page scripts."""
+"""Safe article imports for text plus durable editorial media."""
 import asyncio
 import ipaddress
 import os
@@ -7,6 +7,7 @@ import socket
 from urllib.parse import urlparse, urljoin
 import httpx
 from bs4 import BeautifulSoup
+from ..website_ingest.assets import save_asset
 
 _GEEKPARK_HOSTS = {'geekpark.net', 'www.geekpark.net'}
 _GEEKPARK_ID = re.compile(r'/(?:news|post|posts)/(\d+)(?:[/?#]|$)', re.I)
@@ -18,10 +19,21 @@ def _html_text(value: str) -> str:
     return soup.get_text('\n', strip=True)
 
 
+def _html_media(value: str) -> list[dict]:
+    soup = BeautifulSoup(value or '', 'html.parser')
+    media = []
+    for image in soup.find_all('img'):
+        src = str(image.get('src') or '').strip()
+        if not src: continue
+        kind = 'gif' if src.lower().split('?',1)[0].endswith('.gif') else 'image'
+        media.append({'type':kind,'url':src,'alt':str(image.get('alt') or '')[:300],'caption':''})
+    return media
+
+
 async def extract_wechat_url(url: str):
-    """Reuse the proven website-tab parser, but keep this import text-only."""
+    """Reuse the proven website parser and persist WeChat images/GIFs."""
     from ..website_ingest.parser import parse_wechat_url
-    article = await parse_wechat_url(url, include_images=False)
+    article = await parse_wechat_url(url, include_images=True)
     body = _html_text(article.content_html)
     if len(body) < 40:
         raise ValueError('未提取到完整微信文章，请确认链接可以公开访问')
@@ -31,8 +43,32 @@ async def extract_wechat_url(url: str):
         'title': article.title[:250],
         'summary': article.abstract,
         'body': body,
-        'notice': '已读取中文原文。中文站展示原文、AI 阅读提示与原文链接；请选择模型生成英文并审核标签。',
+        'media': _html_media(article.content_html),
+        'notice': '已读取中文原文及可访问的图片/GIF。请核对媒体、英文稿和标签后发布。',
     }
+
+
+async def extract_feishu_url(url: str):
+    """Copy public Feishu images out of the short-lived parser cache."""
+    from agents.intheloop.feishu_parser import parse_feishu_document
+    from agents.intheloop.feishu.public_image_store import fetch_public_image
+    article = await parse_feishu_document(url)
+    paragraphs, media = [], []
+    for block in article.blocks:
+        if block.type == 'image' and block.url:
+            fetched = fetch_public_image(block.url)
+            if fetched:
+                raw, filename, mime = fetched
+                reference = save_asset(raw, mime, suffix=filename)
+                media.append({'type':'gif' if mime == 'image/gif' else 'image','url':reference,'alt':'','caption':''})
+        elif block.type in {'heading','paragraph','question','answer','caption'} and block.content.strip():
+            prefix = (block.speaker.strip() + '：') if block.speaker.strip() else ''
+            paragraphs.append(prefix + block.content.strip())
+    body = '\n\n'.join(paragraphs)
+    if not article.title or len(body) < 20: raise ValueError('未提取到完整飞书文档，请确认链接已开放阅读权限')
+    notice = f'已读取飞书正文及 {len(media)} 个图片/GIF。'
+    if article.video_count: notice += f' 检测到 {article.video_count} 个视频附件，请在媒体区手动上传视频文件。'
+    return {'source_account':'In The Loop','brand':'intheloop','title':article.title[:250],'summary':article.digest,'body':body,'media':media,'notice':notice}
 
 
 async def extract_geekpark_url(url: str):
@@ -90,6 +126,8 @@ async def extract_url(url: str, *, specialized: bool = True):
         return await extract_wechat_url(url)
     if specialized and hostname in _GEEKPARK_HOSTS:
         return await extract_geekpark_url(url)
+    if specialized and (hostname == 'feishu.cn' or hostname.endswith('.feishu.cn')):
+        return await extract_feishu_url(url)
     async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False,
                                  headers={'User-Agent': 'Mozilla/5.0'}) as client:
         for _ in range(5):
@@ -119,4 +157,4 @@ async def extract_url(url: str, *, specialized: bool = True):
     if not title or len(body) < 40: raise ValueError('未提取到完整文章，请直接粘贴正文')
     description = soup.select_one('meta[name="description"]')
     return {'source_account':'In The Loop','brand':'intheloop','title': title[:250], 'summary': description.get('content', '') if description else '',
-            'body': body, 'notice': '已提取原文文字。中文保留原链接；请选择模型生成英文，再编辑并分别发布。图片和音频未导入。'}
+            'body': body, 'media': [], 'notice': '已提取原文文字。普通网站的媒体请在下方手动上传。'}

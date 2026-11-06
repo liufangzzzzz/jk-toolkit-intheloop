@@ -108,6 +108,25 @@ class Companion(Resource):
     label_en: str = ""
     kind: Literal["article","website","podcast","other"] = "article"
 
+class Terminology(BaseModel):
+    zh: str = Field(min_length=1, max_length=160)
+    en: str = Field(default='', max_length=240)
+    kind: Literal['company','person','product','technical','other'] = 'other'
+    confirmed: bool = False
+
+class MediaAsset(BaseModel):
+    type: Literal['image','gif','video'] = 'image'
+    url: str = Field(min_length=1, max_length=500)
+    alt: str = Field(default='', max_length=300)
+    caption: str = Field(default='', max_length=500)
+
+    @field_validator('url')
+    @classmethod
+    def media_url(cls, value):
+        if value.startswith('ingest-asset://'):
+            return value
+        return valid_url(value)
+
 class ImportURL(BaseModel):
     url: str = Field(min_length=1, max_length=4000)
 
@@ -135,6 +154,13 @@ class Content(Base):
             value = dict(value)
             if not value.get('brand'):
                 value['brand'] = 'intheloop'
+            raw_date = str(value.get('date') or '').strip()
+            if raw_date:
+                raw_date = raw_date.replace('年','-').replace('月','-').replace('日','').replace('/','-').replace('.','-').rstrip('-')
+                parts = raw_date.split('-')
+                if len(parts) in (2,3) and all(part.isdigit() for part in parts):
+                    raw_date = '-'.join([parts[0], *[part.zfill(2) for part in parts[1:]]])
+                value['date'] = raw_date
             # The companion-link editor may contain a newly-added, untouched row.
             # The whole section is optional, so do not turn that UI state into a 422.
             resources = value.get('resources')
@@ -161,6 +187,8 @@ class Content(Base):
     tag_ids: list[str] = Field(default_factory=list)
     ai_recommended_tag_ids: list[str] = Field(default_factory=list)
     ai_suggested_tags: list[str] = Field(default_factory=list)
+    terminology: list[Terminology] = Field(default_factory=list)
+    media: list[MediaAsset] = Field(default_factory=list, max_length=100)
     versions: dict[Locale, Version]
 
     @field_validator('source_url')
@@ -181,6 +209,7 @@ class Publication(BaseModel):
 
 class Generate(BaseModel):
     model: str = Field(min_length=1)
-    task: Literal['english','chinese','tags','summary','analyze']
+    task: Literal['english','chinese','tags','summary','analyze','terms','calibrate']
     text: str = Field(min_length=1, max_length=60000)
     locale: Locale = 'zh'
+    terminology: list[Terminology] = Field(default_factory=list, max_length=100)

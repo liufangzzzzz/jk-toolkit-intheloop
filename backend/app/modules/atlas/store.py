@@ -297,6 +297,12 @@ def public_catalogue(locale):
             c = json.loads(row['snapshot'])
             if c.get('visibility','public') == 'internal': continue
             if locale == 'en' and (c.get('section') == 'overseas' or c.get('chinese_only')): continue
+            c.pop('terminology', None)  # Editorial calibration notes stay in the workbench.
+            c['media'] = [
+                {**media, 'url': '/api/v1/public/atlas/media/' + media['url'].removeprefix('ingest-asset://')}
+                if str(media.get('url','')).startswith('ingest-asset://') else media
+                for media in c.get('media', [])
+            ]
             c['company_ids'] = [i for i in c['company_ids'] if i in company_ids]
             c['tag_ids'] = [i for i in c['tag_ids'] if i in tag_ids]
             c['published_at'] = row['published_at']

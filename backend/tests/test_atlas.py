@@ -67,6 +67,38 @@ def test_unsafe_link_and_slug(client):
     assert client.post('/api/v1/atlas/companies',json={'slug':'../../oops','name_zh':'测试'}).status_code==422
     assert client.post('/api/v1/atlas/contents',json=article(source_url='javascript:alert(1)')).status_code==422
 
+def test_content_dates_normalize_common_editor_formats(client):
+    for value, expected in [('2026','2026'),('2026/1','2026-01'),('2026.1.9','2026-01-09'),('2026年10月29日','2026-10-29')]:
+        identifier=create(client,'contents',article(date=value))
+        saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
+        assert saved['date']==expected
+
+def test_content_terminology_is_saved_for_editorial_calibration(client):
+    identifier=create(client,'contents',article(terminology=[{'zh':'桥介数物','en':'Qiaojie Digital','kind':'company','confirmed':True}]))
+    saved=next(c for c in client.get('/api/v1/atlas').json()['contents'] if c['id']==identifier)
+    assert saved['terminology']==[{'zh':'桥介数物','en':'Qiaojie Digital','kind':'company','confirmed':True}]
+    assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
+    assert 'terminology' not in client.get('/api/v1/public/atlas/zh').json()['contents'][0]
+
+def test_article_media_upload_is_published_through_public_asset_route(client, tmp_path, monkeypatch):
+    monkeypatch.setenv('ITL_IMPORT_ASSET_PATH', str(tmp_path / 'assets'))
+    png = b'\x89PNG\r\n\x1a\n' + b'test-image'
+    uploaded = client.post('/api/v1/atlas/media', files={'file':('robot.png', png, 'image/png')})
+    assert uploaded.status_code == 200, uploaded.text
+    media = uploaded.json()
+    assert media['type'] == 'image' and media['url'].startswith('ingest-asset://')
+    identifier=create(client,'contents',article(media=[media]))
+    assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
+    public = client.get('/api/v1/public/atlas/zh').json()['contents'][0]
+    assert public['media'][0]['url'].startswith('/api/v1/public/atlas/media/')
+    anonymous=TestClient(app)
+    asset=anonymous.get(public['media'][0]['url'])
+    assert asset.status_code==200 and asset.content==png
+    assert asset.headers['cache-control']=='public, max-age=31536000, immutable'
+    partial=anonymous.get(public['media'][0]['url'],headers={'Range':'bytes=0-7'})
+    assert partial.status_code==206 and partial.content==png[:8]
+    assert partial.headers['content-range']==f'bytes 0-7/{len(png)}'
+
 def test_models_explicit_and_no_key_exposure(client,monkeypatch):
     monkeypatch.setenv('MODELINK_API_KEY','secret-never-show')
     monkeypatch.setenv('MODELINK_BASE_URL','https://example.com/v1')
@@ -272,9 +304,11 @@ def test_english_generation_returns_editable_fields_with_unified_glossary(client
         body=json.loads(request.content)
         assert body['model']==chosen_model
         assert 'Figure AI' in body['messages'][0]['content']
+        assert '桥介数物' in body['messages'][0]['content']
+        assert 'Qiaojie Digital' in body['messages'][0]['content']
         return httpx.Response(200,json={'choices':[{'message':{'content':json.dumps({'title':'A report','summary':'A short summary.','body':'English text.'})}}]})
     monkeypatch.setattr(routes.httpx,'AsyncClient',lambda **kw:original(transport=httpx.MockTransport(handler),**kw))
-    response=client.post('/api/v1/atlas/generate',json={'model':chosen_model,'task':'english','text':'这是一篇文字稿。'})
+    response=client.post('/api/v1/atlas/generate',json={'model':chosen_model,'task':'english','text':'这是一篇文字稿。','terminology':[{'zh':'桥介数物','en':'Qiaojie Digital','kind':'company','confirmed':True}]})
     assert response.status_code==200,response.text
     assert response.json()['version']['title']=='A report'
     assert client.get('/api/v1/public/atlas/en').json()['contents']==[]
