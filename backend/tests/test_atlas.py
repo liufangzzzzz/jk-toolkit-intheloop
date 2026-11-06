@@ -235,24 +235,54 @@ def test_import_url_copies_public_gif_and_keeps_redirect_boundary(client, monkey
     assert all(item['url'].startswith('ingest-asset://') for item in imported.json()['media'])
 
 
-def test_import_geekpark_uses_public_api_when_article_page_blocks_crawlers(client, monkeypatch):
+def test_import_geekpark_uses_public_api_when_article_page_blocks_crawlers(client, monkeypatch, tmp_path):
     import httpx
     from app.modules.atlas import extract
+    from app.modules.website_ingest.assets import read_asset
+    monkeypatch.setenv('ITL_IMPORT_ASSET_PATH', str(tmp_path / 'assets'))
     original = httpx.AsyncClient
     def handler(request):
-        assert str(request.url) == 'https://mainssl.geekpark.net/api/v1/posts/373252'
-        return httpx.Response(200, request=request, json={'post': {
-            'title': '极客公园原文标题',
-            'abstract': '原文摘要',
-            'content': '<p>' + ('完整文章正文。' * 15) + '</p><script>bad()</script>',
-            'authors': [{'nickname': '作者甲'}],
-        }})
+        if request.url.path == '/api/v1/posts/373252':
+            return httpx.Response(200, request=request, json={'post': {
+                'title': '极客公园原文标题',
+                'abstract': '原文摘要',
+                'content': '<p>' + ('完整文章正文。' * 15) + '</p><img src="https://imgslim.geekpark.net/photo.png"><script>bad()</script>',
+                'authors': [{'nickname': '作者甲'}],
+            }})
+        if request.url.path == '/photo.png':
+            return httpx.Response(200, request=request, headers={'content-type':'application/octet-stream'}, content=b'\x89PNG\r\n\x1a\narticle-image')
+        raise AssertionError(str(request.url))
     monkeypatch.setattr(extract.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     response = client.post('/api/v1/atlas/import-url', json={'url':'https://www.geekpark.net/news/373252'})
     assert response.status_code == 200
     assert response.json()['title'] == '极客公园原文标题'
     assert response.json()['source_account'] == 'In The Loop'
     assert 'bad()' not in response.json()['body']
+    assert len(response.json()['media']) == 1
+    assert read_asset(response.json()['media'][0]['url'])[0].startswith(b'\x89PNG')
+
+def test_import_geekpark_keeps_trusted_cdn_image_when_server_copy_fails(client, monkeypatch, tmp_path):
+    import httpx
+    from app.modules.atlas import extract
+    monkeypatch.setenv('ITL_IMPORT_ASSET_PATH', str(tmp_path / 'assets'))
+    original = httpx.AsyncClient
+    def handler(request):
+        if request.url.path == '/api/v1/posts/373252':
+            return httpx.Response(200, request=request, json={'post': {
+                'title': '极客公园原文标题',
+                'abstract': '原文摘要',
+                'content': '<p>' + ('完整文章正文。' * 15) + '</p><img src="https://imgslim.geekpark.net/photo.png">',
+            }})
+        if request.url.path == '/photo.png':
+            return httpx.Response(503, request=request)
+        raise AssertionError(str(request.url))
+    monkeypatch.setattr(extract.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
+    response = client.post('/api/v1/atlas/import-url', json={'url':'https://www.geekpark.net/news/373252'})
+    assert response.status_code == 200
+    assert response.json()['media'] == [{
+        'type':'image','url':'https://imgslim.geekpark.net/photo.png','alt':'','caption':'',
+        'placement':'before_body','inline_offsets':{},
+    }]
 
 def test_tag_graph_visibility_and_cycle_validation(client):
     root = create(client,'tags',{'slug':'body','name_zh':'机器人本体','dimension':'form','map_visible':True})

@@ -403,7 +403,11 @@ def render_preview(article: WebsiteImportArticle) -> str:
         # Word files produce very large JSON responses, which were prone to truncation on
         # slower/international connections. The authenticated asset route streams each
         # preview image independently instead.
-        image["src"] = f"/api/v1/website-import/assets/{token}"
+        # An srcDoc iframe may not consistently attach the workbench session to
+        # image requests. The parent editor fetches this authenticated URL and
+        # replaces the tiny placeholder with an object URL after the iframe loads.
+        image["data-preview-src"] = f"/api/v1/website-import/assets/{token}"
+        image["src"] = "data:image/gif;base64,R0lGODlhAQABAAD/ACwAAAAAAQABAAACADs="
     content = str(soup)
     return (
         '<!doctype html><html><head><meta charset="utf-8"><style>'
@@ -412,6 +416,7 @@ def render_preview(article: WebsiteImportArticle) -> str:
         '#website-content h1,#website-content h2{font-size:18px!important;line-height:1.55!important;margin:28px 0 20px}'
         '#website-content h3,#website-content h4{font-size:17px!important;line-height:1.55!important}'
         '#website-content p{margin:0 0 20px}img{display:block;max-width:100%;height:auto;margin:24px auto}'
+        'img.asset-preview-failed{min-height:72px;padding:20px;border:1px dashed #b98b96;background:#fff5f7;color:#8d4053}'
         'table{width:100%;border-collapse:collapse}'
         'td,th{padding:8px;border:1px solid #ddd}blockquote{margin:20px 0;padding-left:18px;border-left:3px solid #111;color:#555}'
         '#website-content[contenteditable="true"]{outline:2px solid #a583ff;outline-offset:10px}'

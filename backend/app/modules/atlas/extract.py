@@ -10,6 +10,7 @@ from bs4 import BeautifulSoup
 from ..website_ingest.assets import save_asset
 
 _GEEKPARK_HOSTS = {'geekpark.net', 'www.geekpark.net'}
+_GEEKPARK_IMAGE_HOSTS = {'imgslim.geekpark.net'}
 _GEEKPARK_ID = re.compile(r'/(?:news|post|posts)/(\d+)(?:[/?#]|$)', re.I)
 _IMAGE_LIMIT = 15 * 1024 * 1024
 
@@ -83,7 +84,23 @@ async def _persist_html_media(value: str, base_url: str) -> list[dict]:
         async with httpx.AsyncClient(timeout=25, follow_redirects=False, trust_env=False,
                                      headers={'User-Agent':'Mozilla/5.0','Accept':'image/avif,image/webp,image/png,image/gif,image/jpeg,*/*;q=0.5'}) as client:
             async def fetch(index, source):
-                async with semaphore: return index, await _download_public_image(client, source)
+                async with semaphore:
+                    downloaded = await _download_public_image(client, source)
+                    # GeekPark's image CDN is a durable public origin. Some
+                    # deployments cannot reach it directly even though readers'
+                    # browsers can. Do not silently discard those article images:
+                    # keep the verified public URL as a display fallback.
+                    if downloaded is None and (urlparse(source).hostname or '').lower() in _GEEKPARK_IMAGE_HOSTS:
+                        path = urlparse(source).path.lower()
+                        downloaded = {
+                            'type': 'gif' if path.endswith('.gif') else 'image',
+                            'url': source,
+                            'alt': '',
+                            'caption': '',
+                            'placement': 'before_body',
+                            'inline_offsets': {},
+                        }
+                    return index, downloaded
             tasks = [asyncio.create_task(fetch(index, source)) for index, source in enumerate(remote)]
             done, pending = await asyncio.wait(tasks, timeout=35)
             for task in pending: task.cancel()
@@ -161,6 +178,14 @@ async def extract_geekpark_url(url: str):
     if not title or len(body) < 40:
         raise ValueError('未提取到完整极客公园文章，请检查链接或直接粘贴正文')
     media = await _persist_html_media(content_html, url)
+    copied = sum(str(item.get('url', '')).startswith('ingest-asset://') for item in media)
+    fallback = len(media) - copied
+    if media:
+        media_notice = f'已读取 {len(media)} 个图片/GIF（{copied} 个已复制到本站'
+        media_notice += f'，{fallback} 个使用极客公园原图链接' if fallback else ''
+        media_notice += '）。'
+    else:
+        media_notice = '未读取到正文图片；若原文有图，请稍后重新提取或在媒体区手动上传。'
     return {
         'source_account': 'In The Loop',
         'brand': 'intheloop',
@@ -168,7 +193,7 @@ async def extract_geekpark_url(url: str):
         'summary': summary,
         'body': body,
         'media': media,
-        'notice': f'已读取中文原文并保存 {len(media)} 个图片/GIF。中文站展示原文、AI 阅读提示与原文链接；请选择模型生成英文并审核标签。',
+        'notice': media_notice + '中文站展示原文、AI 阅读提示与原文链接；请选择模型生成英文并审核标签。',
     }
 
 async def public_target(url):

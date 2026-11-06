@@ -9,6 +9,7 @@
 @media(max-width:650px){.studio .ai-generation-options{grid-template-columns:1fr}.studio .source-input{align-items:stretch;flex-direction:column}.studio .source-input button{margin-top:0}}
 @media(max-width:760px){.studio .terminology-editor{padding:16px}.studio .terminology-editor .section-label{flex-direction:column}.studio .terminology-row{grid-template-columns:1fr 34px}.studio .terminology-row>select,.studio .terminology-row>input,.studio .terminology-row>.term-confirm{grid-column:1}.studio .terminology-row>button{grid-column:2;grid-row:1}.studio .terminology-actions{align-items:stretch;flex-direction:column}}
 @media(max-width:650px){.studio .story-media>.section-label{flex-direction:column}.studio .media-editor-row{grid-template-columns:100px minmax(0,1fr) 34px}.studio .media-preview{min-height:70px}}
+.studio .media-preview-error{padding:14px;text-align:left;overflow-wrap:anywhere}
 
 /* Browse first; on phones, open one editor at a time. */
 .studio .media-insert-controls{display:grid;grid-template-columns:minmax(170px,.8fr) minmax(180px,1fr);gap:8px;margin-bottom:8px}.studio .media-insert-controls button{border:1px solid #171217;background:#171217;color:#fff;font-size:11px}.studio .media-insert-controls select{margin:0!important}.studio .media-position{display:block;margin:-1px 0 9px;color:#786b76;font-size:10px}

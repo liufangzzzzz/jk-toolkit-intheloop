@@ -22,6 +22,10 @@ test('non-JSON gateway error preserves HTTP status', async (t) => {
   t.mock.method(globalThis, 'fetch', async () => new Response('<html>error</html>', { status: 502 }));
   await assert.rejects(api('/website-import/parse-file'), /HTTP 502/);
 });
+test('oversized non-JSON uploads explain the 413 response', async (t) => {
+  t.mock.method(globalThis, 'fetch', async () => new Response('<html>too large</html>', { status: 413 }));
+  await assert.rejects(api('/atlas/media'), /超过服务器大小限制（HTTP 413）/);
+});
 test('backend validation message and disconnected requests remain actionable', async (t) => {
   const fetchMock = t.mock.method(globalThis, 'fetch', async () => Response.json({ detail: { message: 'Word 文件为空或超过 60MB' } }, { status: 400 }));
   await assert.rejects(api('/website-import/parse-file'), /超过 60MB/);

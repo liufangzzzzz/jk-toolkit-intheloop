@@ -633,8 +633,13 @@ type WebsiteWorkspaceProps = {
 function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
   const { status, parsed, busy, notice } = props;
   const iframeRef = useRef<HTMLIFrameElement>(null);
+  const previewObjectUrls = useRef<string[]>([]);
   const [dragging, setDragging] = useState(false);
   const dragDepth = useRef(0);
+
+  useEffect(() => () => {
+    previewObjectUrls.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
 
   function enterWords(event: DragEvent<HTMLDivElement>) {
     if (!Array.from(event.dataTransfer.types).includes('Files')) return;
@@ -655,16 +660,39 @@ function WebsiteWorkspace(props: WebsiteWorkspaceProps) {
     copy.querySelectorAll<HTMLImageElement>('img[data-asset-ref]').forEach((image) => {
       image.src = image.dataset.assetRef || image.src;
       image.removeAttribute('data-asset-ref');
+      image.removeAttribute('data-preview-src');
+      image.removeAttribute('data-preview-state');
+      image.classList.remove('asset-preview-failed');
     });
     props.onUpdate({ content_html: copy.innerHTML });
   }
 
-  function enableBodyEditing() {
+  async function enableBodyEditing() {
     const root = iframeRef.current?.contentDocument?.getElementById('website-content');
     if (!root) return;
+    previewObjectUrls.current.forEach((url) => URL.revokeObjectURL(url));
+    previewObjectUrls.current = [];
     root.setAttribute('contenteditable', 'true');
     root.setAttribute('aria-label', '官网正文编辑器');
     root.oninput = () => saveEditedBody(root);
+    await Promise.all(Array.from(root.querySelectorAll<HTMLImageElement>('img[data-preview-src]')).map(async (image) => {
+      const source = image.dataset.previewSrc;
+      if (!source) return;
+      try {
+        const response = await fetch(source, { credentials: 'same-origin', headers: { Accept: 'image/*' } });
+        const contentType = response.headers.get('content-type') || '';
+        if (!response.ok || !contentType.startsWith('image/')) throw new Error('invalid preview response');
+        const objectUrl = URL.createObjectURL(await response.blob());
+        previewObjectUrls.current.push(objectUrl);
+        image.src = objectUrl;
+        image.dataset.previewState = 'ready';
+      } catch {
+        image.removeAttribute('src');
+        image.dataset.previewState = 'failed';
+        image.classList.add('asset-preview-failed');
+        image.alt = image.alt || '图片预览失败，原文件仍会用于发布';
+      }
+    }));
   }
 
   function updateTitle(value: string) {
