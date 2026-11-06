@@ -141,9 +141,9 @@ def test_preview_streams_assets_instead_of_embedding_base64(tmp_path, monkeypatc
 
     preview = parser.render_preview(article)
 
-    assert "data:image" not in preview
+    assert preview.count("data:image") == 1  # one tiny shared-style placeholder, not the real asset
     assert reference in preview
-    assert f'/api/v1/website-import/assets/{reference.removeprefix("ingest-asset://")}' in preview
+    assert f'data-preview-src="/api/v1/website-import/assets/{reference.removeprefix("ingest-asset://")}"' in preview
 
 
 def test_image_upload_accepts_nested_success_response(tmp_path, monkeypatch):
@@ -244,7 +244,7 @@ def test_preview_streams_local_images(tmp_path, monkeypatch):
 
     preview = parser.render_preview(article)
 
-    assert 'src="/api/v1/website-import/assets/' in preview
+    assert 'data-preview-src="/api/v1/website-import/assets/' in preview
     assert f'data-asset-ref="{reference}"' in preview
     assert 'id="website-content"' in preview
 
