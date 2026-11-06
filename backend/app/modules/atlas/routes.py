@@ -22,6 +22,7 @@ class EditorialSkill(BaseModel):
     instructions: str = Field(min_length=20, max_length=20000)
 
 class HomepageFeatured(BaseModel):
+    locale: Locale = 'zh'
     content_ids: list[str] = Field(default_factory=list, max_length=100)
 
 @router.get('')
@@ -30,8 +31,7 @@ def catalogue(): return store.catalogue()
 @public_router.get('/{locale}')
 def public_catalogue(locale: Locale): return store.public_catalogue(locale)
 
-@public_router.get('/media/{token}')
-def public_media(token: str, request: Request):
+def media_response(token: str, request: Request):
     result = read_asset('ingest-asset://' + token)
     if not result: raise HTTPException(404, '媒体文件不存在')
     raw, _filename, content_type = result
@@ -48,6 +48,16 @@ def public_media(token: str, request: Request):
         chunk=raw[start:end+1]
         return Response(content=chunk,status_code=206,media_type=content_type,headers={**headers,'Content-Range':f'bytes {start}-{end}/{len(raw)}','Content-Length':str(len(chunk))})
     return Response(content=raw, media_type=content_type, headers=headers)
+
+
+@router.get('/media/{token}')
+def preview_media(token: str, request: Request):
+    return media_response(token, request)
+
+
+@public_router.get('/media/{token}')
+def public_media(token: str, request: Request):
+    return media_response(token, request)
 
 
 def persist(kind, body, record_id=None):
@@ -117,7 +127,7 @@ async def upload_media(file: UploadFile = File(...)):
         content_type = {'.jpg':'image/jpeg','.jpeg':'image/jpeg','.png':'image/png','.webp':'image/webp','.gif':'image/gif','.mp4':'video/mp4','.webm':'video/webm','.mov':'video/quicktime'}.get(suffix,'')
     if content_type not in allowed: raise HTTPException(422, '支持 JPG、PNG、WebP、GIF、MP4、WebM 和 MOV')
     reference = save_asset(raw, content_type, suffix=suffix)
-    return {'type':allowed[content_type],'url':reference,'alt':Path(file.filename or '').stem[:300],'caption':''}
+    return {'type':allowed[content_type],'url':reference,'alt':'','caption':'','placement':'unplaced','inline_offsets':{}}
 
 
 @router.get('/models')
@@ -163,7 +173,7 @@ def update_analyzer_skill(body: EditorialSkill):
 def update_homepage_featured(body: HomepageFeatured):
     known = {c['id'] for c in store.catalogue()['contents']}
     if not set(body.content_ids).issubset(known): raise HTTPException(422, '精选内容不存在')
-    store.set_setting('homepage-featured', json.dumps(list(dict.fromkeys(body.content_ids)), ensure_ascii=False))
+    store.set_featured(body.locale, body.content_ids)
     return {'ok': True}
 
 @router.post('/generate')

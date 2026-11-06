@@ -119,6 +119,8 @@ class MediaAsset(BaseModel):
     url: str = Field(min_length=1, max_length=500)
     alt: str = Field(default='', max_length=300)
     caption: str = Field(default='', max_length=500)
+    placement: Literal['unplaced','before_body','inline','after_body'] = 'before_body'
+    inline_offsets: dict[Locale, int] = Field(default_factory=dict)
 
     @field_validator('url')
     @classmethod
@@ -189,6 +191,7 @@ class Content(Base):
     ai_suggested_tags: list[str] = Field(default_factory=list)
     terminology: list[Terminology] = Field(default_factory=list)
     media: list[MediaAsset] = Field(default_factory=list, max_length=100)
+    featured_locales: list[Locale] = Field(default_factory=list)
     versions: dict[Locale, Version]
 
     @field_validator('source_url')

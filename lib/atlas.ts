@@ -78,6 +78,8 @@ export type MediaAsset = {
   url: string;
   alt?: string;
   caption?: string;
+  placement?: "unplaced" | "before_body" | "inline" | "after_body";
+  inline_offsets?: Partial<Record<Locale, number>>;
 };
 export type Content = {
   source_locale?: Locale;
@@ -101,6 +103,7 @@ export type Content = {
   ai_suggested_tags?: string[];
   terminology?: Terminology[];
   media?: MediaAsset[];
+  featured_locales?: Locale[];
   versions: Partial<Record<Locale, Version>>;
   publications?: {
     locale: Locale;
@@ -114,6 +117,8 @@ export type Catalogue = {
   products: Product[];
   contents: Content[];
   homepage_featured_ids?: string[];
+  homepage_featured_zh_ids?: string[];
+  homepage_featured_en_ids?: string[];
 };
 export const dimensions: Record<string, string> = {
   technology: "技术路线",

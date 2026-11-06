@@ -58,6 +58,25 @@ def test_language_publish_snapshot_and_withdrawal(client):
     assert client.delete(f'/api/v1/atlas/contents/{identifier}/publish/zh').status_code==200
     assert client.get('/api/v1/public/atlas/zh').json()['contents']==[]
 
+def test_homepage_featured_is_independent_by_locale_and_editable_from_content(client):
+    zh_id=create(client,'contents',article(featured_locales=['zh']))
+    en_id=create(client,'contents',article(featured_locales=['en']))
+    for identifier in (zh_id,en_id):
+        assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
+        assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'en','revision':1}).status_code==200
+    catalogue=client.get('/api/v1/atlas').json()
+    assert catalogue['homepage_featured_zh_ids']==[zh_id]
+    assert catalogue['homepage_featured_en_ids']==[en_id]
+    public_zh=client.get('/api/v1/public/atlas/zh').json()
+    assert public_zh['homepage_featured_ids']==[zh_id]
+    assert 'featured_locales' not in public_zh['contents'][0]
+    assert client.get('/api/v1/public/atlas/en').json()['homepage_featured_ids']==[en_id]
+    response=client.put('/api/v1/atlas/homepage-featured',json={'locale':'zh','content_ids':[en_id,zh_id]})
+    assert response.status_code==200,response.text
+    updated=client.get('/api/v1/atlas').json()
+    assert updated['homepage_featured_zh_ids']==[en_id,zh_id]
+    assert set(next(c for c in updated['contents'] if c['id']==en_id)['featured_locales'])=={'zh','en'}
+
 def test_bad_relation_rollback(client):
     response=client.post('/api/v1/atlas/contents',json=article(company_ids=['missing']))
     assert response.status_code==409
@@ -87,10 +106,15 @@ def test_article_media_upload_is_published_through_public_asset_route(client, tm
     assert uploaded.status_code == 200, uploaded.text
     media = uploaded.json()
     assert media['type'] == 'image' and media['url'].startswith('ingest-asset://')
+    assert media['placement'] == 'unplaced' and media['alt'] == ''
+    token = media['url'].removeprefix('ingest-asset://')
+    preview = client.get(f'/api/v1/atlas/media/{token}')
+    assert preview.status_code == 200 and preview.content == png
     identifier=create(client,'contents',article(media=[media]))
     assert client.post(f'/api/v1/atlas/contents/{identifier}/publish',json={'locale':'zh','revision':1}).status_code==200
     public = client.get('/api/v1/public/atlas/zh').json()['contents'][0]
     assert public['media'][0]['url'].startswith('/api/v1/public/atlas/media/')
+    assert public['media'][0]['placement'] == 'unplaced'
     anonymous=TestClient(app)
     asset=anonymous.get(public['media'][0]['url'])
     assert asset.status_code==200 and asset.content==png
@@ -176,9 +200,10 @@ def test_text_file_import_and_external_missing_link(client):
     identifier = create(client, 'contents', record)
     assert client.post(f'/api/v1/atlas/contents/{identifier}/publish', json={'locale':'zh','revision':1}).status_code == 409
 
-def test_import_url_text_only_and_redirect_boundary(client, monkeypatch):
+def test_import_url_copies_public_gif_and_keeps_redirect_boundary(client, monkeypatch, tmp_path):
     import httpx
     from app.modules.atlas import extract
+    monkeypatch.setenv('ITL_IMPORT_ASSET_PATH', str(tmp_path / 'assets'))
     original = httpx.AsyncClient
     monkeypatch.setattr(extract.socket, 'getaddrinfo', lambda host, port, *a, **kw: [(extract.socket.AF_INET,extract.socket.SOCK_STREAM,6,'',('127.0.0.1' if host in ('localhost','127.0.0.1') else '93.184.216.34',port))])
     seen = []
@@ -190,7 +215,9 @@ def test_import_url_text_only_and_redirect_boundary(client, monkeypatch):
         assert request.headers['host'] in ('mp.weixin.qq.com','geekpark.net','figure.ai')
         assert request.extensions['sni_hostname'] == request.headers['host']
         if request.url.path == '/redirect': return httpx.Response(302, headers={'location':'http://127.0.0.1/private'})
-        return httpx.Response(200, headers={'content-type':'text/html'}, text='<h1>文章标题</h1><div id="js_content"><p>'+('可以翻译的文字。'*15)+'</p><img src="https://private/image"><script>bad()</script></div>')
+        if request.url.path == '/asset.gif': return httpx.Response(200, headers={'content-type':'application/octet-stream'}, content=b'GIF89a'+b'animated-image')
+        if request.url.path == '/photo.jpg': return httpx.Response(200, headers={'content-type':'image/jpeg'}, content=b'\xff\xd8\xff'+b'jpeg-image')
+        return httpx.Response(200, headers={'content-type':'text/html'}, text='<h1>文章标题</h1><div id="js_content"><p>'+('可以翻译的文字。'*15)+'</p><img src="/asset.gif"><img data-src="/photo.jpg"><script>bad()</script></div>')
     monkeypatch.setattr(extract.httpx, 'AsyncClient', lambda **kw: original(transport=httpx.MockTransport(handler), **kw))
     r = client.post('/api/v1/atlas/import-url', json={'url':'https://mp.weixin.qq.com/s/abc'})
     assert r.status_code == 200
@@ -201,8 +228,11 @@ def test_import_url_text_only_and_redirect_boundary(client, monkeypatch):
     assert len(seen) == 1
     assert client.post('/api/v1/atlas/import-url',json={'url':'http://localhost/private'}).status_code == 422
     assert len(seen) == 1
-    assert client.post('/api/v1/atlas/import-url',json={'url':'https://figure.ai/news/example'}).status_code == 200
-    assert len(seen) == 2
+    imported=client.post('/api/v1/atlas/import-url',json={'url':'https://figure.ai/news/example'})
+    assert imported.status_code == 200
+    assert len(seen) == 4
+    assert [item['type'] for item in imported.json()['media']]==['gif','image']
+    assert all(item['url'].startswith('ingest-asset://') for item in imported.json()['media'])
 
 
 def test_import_geekpark_uses_public_api_when_article_page_blocks_crawlers(client, monkeypatch):
